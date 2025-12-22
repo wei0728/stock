@@ -77,6 +77,17 @@
 
     <!-- ========================= RSI Settings ========================= -->
     <div class="sidebar-section">
+      <h3>MACD Settings</h3>
+
+      <label>Fast EMA</label>
+      <input type="number" id="macdFast" value="12" />
+
+      <label>Slow EMA</label>
+      <input type="number" id="macdSlow" value="26" />
+
+      <label>Signal</label>
+      <input type="number" id="macdSignal" value="9" />
+
       <h3>RSI Settings</h3>
 
       <label>Period</label>
@@ -151,6 +162,24 @@
       <div class="card-body">
         <div style="height: 600px;">
           <canvas id="maChart"></canvas>
+        </div>
+      </div>
+    </section>
+    <!-- MACD Chart -->
+    <section class="card chart-card">
+      <div class="card-header">
+        <div class="card-title">
+          <span class="card-icon">📉</span>
+          <div>
+            <h2>MACD</h2>
+            <p>MACD Line / Signal / Histogram</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-body">
+        <div style="height: 600px;">
+          <canvas id="macdChart"></canvas>
         </div>
       </div>
     </section>

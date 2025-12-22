@@ -17,6 +17,11 @@ let dataMA = [];   // SMA
 let dataWMA = [];
 let dataEMA = [];
 
+let macdLine   = [];
+let macdSignal = [];
+let macdHist   = [];
+let macdChart  = null;
+
 // KD 交叉
 let kdGolden = [];
 let kdDeath  = [];
@@ -239,6 +244,79 @@ function exponential_moving_average(d, radius) {
   return ema;
 }
 
+// ============= MACD 計算 =============
+// fast: 快線 EMA 週期 (預設 12)
+// slow: 慢線 EMA 週期 (預設 26)
+// signal: 訊號線 EMA 週期 (預設 9)
+
+function computeMACD(fast, slow, signal) {
+  // 先重置
+  macdLine   = Array(TOTAL_DAYS).fill(NaN);
+  macdSignal = Array(TOTAL_DAYS).fill(NaN);
+  macdHist   = Array(TOTAL_DAYS).fill(NaN);
+
+  if (TOTAL_DAYS === 0) return;
+
+  // 基本防呆
+  if (!Number.isFinite(fast)   || fast   < 2) fast   = 12;
+  if (!Number.isFinite(slow)   || slow   <= fast) slow = fast + 1;
+  if (!Number.isFinite(signal) || signal < 1) signal = 9;
+
+  // 1. 先用你現成的 EMA（getMAArray("EMA", N)）算快/慢線
+  const emaFast = getMAArray("EMA", fast);
+  const emaSlow = getMAArray("EMA", slow);
+
+  // 2. MACD 主線 = 快線 EMA - 慢線 EMA
+  for (let i = 0; i < TOTAL_DAYS; i++) {
+    const f = emaFast[i];
+    const s = emaSlow[i];
+    if (Number.isFinite(f) && Number.isFinite(s)) {
+      macdLine[i] = f - s;
+    } else {
+      macdLine[i] = NaN;
+    }
+  }
+
+  // 3. 訊號線 = MACD 線做 EMA(signal)
+  const alpha = 2.0 / (signal + 1.0);
+
+  // 找第一個有限值當起點
+  let start = -1;
+  for (let i = 0; i < TOTAL_DAYS; i++) {
+    if (Number.isFinite(macdLine[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return;                 // 全部都是 NaN
+  if (start + signal > TOTAL_DAYS) return;  // 資料太短算不出來
+
+  // 用 MACD[start .. start+signal-1] 做 SMA seed
+  let sum = 0.0;
+  for (let i = start; i < start + signal; i++) {
+    const v = macdLine[i];
+    if (!Number.isFinite(v)) return;        // 中間有 NaN 就先放棄
+    sum += v;
+  }
+  let ema = sum / signal;
+  const seedIndex = start + signal - 1;
+  macdSignal[seedIndex] = ema;
+  macdHist[seedIndex]   = macdLine[seedIndex] - ema;
+
+  // 後續用 EMA 遞推
+  for (let i = seedIndex + 1; i < TOTAL_DAYS; i++) {
+    const v = macdLine[i];
+    if (!Number.isFinite(v)) {
+      macdSignal[i] = NaN;
+      macdHist[i]   = NaN;
+      continue;
+    }
+    ema = ema * (1.0 - alpha) + v * alpha;
+    macdSignal[i] = ema;
+    macdHist[i]   = macdLine[i] - ema;
+  }
+}
+
 
 // ============= RSI 計算 =============
 
@@ -427,6 +505,42 @@ function computeAll() {
     computeRSI(rsiPeriod);
   } else {
     rsiData = [];
+  }
+
+  // ----- 4. MACD -----
+  let fast  = 12;
+  let slow  = 26;
+  let sig   = 9;
+
+  const macdFastInput   = document.getElementById("macdFast");
+  const macdSlowInput   = document.getElementById("macdSlow");
+  const macdSignalInput = document.getElementById("macdSignal");
+
+  if (macdFastInput) {
+    let v = parseInt(macdFastInput.value, 10);
+    if (!Number.isFinite(v) || v < 2) v = 12;
+    macdFastInput.value = v;
+    fast = v;
+  }
+  if (macdSlowInput) {
+    let v = parseInt(macdSlowInput.value, 10);
+    if (!Number.isFinite(v) || v <= fast) v = fast + 1;
+    macdSlowInput.value = v;
+    slow = v;
+  }
+  if (macdSignalInput) {
+    let v = parseInt(macdSignalInput.value, 10);
+    if (!Number.isFinite(v) || v < 1) v = 9;
+    macdSignalInput.value = v;
+    sig = v;
+  }
+
+  if (TOTAL_DAYS > 0) {
+    computeMACD(fast, slow, sig);
+  } else {
+    macdLine   = [];
+    macdSignal = [];
+    macdHist   = [];
   }
 }
 
@@ -835,6 +949,104 @@ function updateMAChart() {
   }
 }
 
+// ============= MACD 圖表 =============
+
+function updateMACDChart() {
+  const canvas = document.getElementById("macdChart");
+  if (!canvas) return;
+  if (TOTAL_DAYS === 0 || !macdLine.length) return;
+
+  const labels = [...Array(TOTAL_DAYS).keys()];
+
+  // 已存在就更新
+  if (macdChart) {
+    macdChart.data.labels = labels;
+    macdChart.data.datasets[0].data = macdLine;
+    macdChart.data.datasets[1].data = macdSignal;
+    macdChart.data.datasets[2].data = macdHist;
+    macdChart.update("none");
+    return;
+  }
+
+  const ctx = canvas.getContext("2d");
+  macdChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "MACD",
+          data: macdLine,
+          borderColor: "#FFB74D",
+          borderWidth: 2,
+          fill: false,
+          tension: 0,
+          pointRadius: 0,
+          yAxisID: "y"
+        },
+        {
+          label: "Signal",
+          data: macdSignal,
+          borderColor: "#4FC3F7",
+          borderWidth: 2,
+          fill: false,
+          tension: 0,
+          pointRadius: 0,
+          yAxisID: "y"
+        },
+        {
+          label: "Histogram",
+          type: "bar",
+          data: macdHist,
+          yAxisID: "y",
+          borderWidth: 0,
+          backgroundColor: (ctx) => {
+            const v = ctx.raw;
+            if (!Number.isFinite(v)) return "rgba(158,158,158,0.4)";
+            return v >= 0
+              ? "rgba(76, 175, 80, 0.6)"   // 正：綠
+              : "rgba(244, 67, 54, 0.6)";  // 負：紅
+          }
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "nearest", axis: "x", intersect: false },
+      plugins: {
+        legend: {
+          position: "top",
+          labels: { color: "#eeeeee", usePointStyle: true, pointStyle: "line" }
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => { return dates[items[0].dataIndex] || ""; }
+          }
+        },
+        zoom: {
+          pan:  { enabled: true, mode: "x", modifierKey: "ctrl" },
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: "x" }
+        }
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: "#bdbdbd",
+            callback: (val, idx) => dates[idx] || ""
+          },
+          grid: { color: "rgba(255,255,255,0.06)" }
+        },
+        y: {
+          ticks: { color: "#bdbdbd" },
+          grid: { color: "rgba(255,255,255,0.12)" }
+        }
+      }
+    }
+  });
+}
+
 
 // ============= RSI 圖表 =============
 
@@ -1070,6 +1282,7 @@ function buildCrossRangeTable() {
 function updateCharts() {
   updateKDChart();
   updateMAChart();
+  updateMACDChart();
   updateRSIChart();
   updateCrossStats();
   buildCrossRangeTable();
@@ -1120,6 +1333,17 @@ if (maSlowInput) {
 });
 
 const rsiPeriodEl = document.getElementById("rsiPeriod");
+const macdFastEl   = document.getElementById("macdFast");
+const macdSlowEl   = document.getElementById("macdSlow");
+const macdSignalEl = document.getElementById("macdSignal");
+
+[macdFastEl, macdSlowEl, macdSignalEl].forEach(el => {
+  if (!el) return;
+  el.addEventListener("change", () => {
+    computeAll();
+    updateCharts();
+  });
+});
 if (rsiPeriodEl) {
   rsiPeriodEl.addEventListener("change", () => {
     computeAll();

@@ -219,6 +219,7 @@ body {
 ========================================= */
 #kdChart,
 #maChart,
+#macdChart,
 #rsiChart {
   width: 100%;
   height: 360px;
@@ -344,6 +345,7 @@ body {
 
   #kdChart,
   #maChart,
+  #macdChart,
   #rsiChart {
     height: 280px;
   }
