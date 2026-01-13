@@ -3,15 +3,177 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Redirecting…</title>
-
-  <!-- 立即跳轉（0 秒） -->
-  <meta http-equiv="refresh" content="0; url=stock.html" />
-
-  <!-- 避免被搜尋引擎當成內容頁 -->
-  <meta name="robots" content="noindex" />
+  <title>📈 Stock Analysis Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;800&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: "Roboto", system-ui, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      color: #f5f5f5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    
+    .container {
+      max-width: 900px;
+      width: 100%;
+    }
+    
+    .header {
+      text-align: center;
+      margin-bottom: 50px;
+    }
+    
+    .header h1 {
+      font-size: 48px;
+      font-weight: 800;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #90caf9 0%, #42a5f5 50%, #00e5ff 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -1px;
+    }
+    
+    .header p {
+      font-size: 18px;
+      opacity: 0.85;
+      font-weight: 300;
+    }
+    
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+      margin-top: 40px;
+    }
+    
+    .card {
+      background: rgba(255,255,255,0.05);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 20px;
+      padding: 32px 28px;
+      text-decoration: none;
+      color: inherit;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(135deg, rgba(0,255,160,0.1) 0%, rgba(0,200,255,0.1) 100%);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    
+    .card:hover {
+      transform: translateY(-8px);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+      border-color: rgba(0,255,160,0.3);
+    }
+    
+    .card:hover::before {
+      opacity: 1;
+    }
+    
+    .card-icon {
+      font-size: 56px;
+      margin-bottom: 20px;
+      display: block;
+      position: relative;
+      z-index: 1;
+    }
+    
+    .card-title {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      position: relative;
+      z-index: 1;
+    }
+    
+    .card-desc {
+      font-size: 14px;
+      opacity: 0.8;
+      line-height: 1.6;
+      position: relative;
+      z-index: 1;
+    }
+    
+    .features {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      position: relative;
+      z-index: 1;
+    }
+    
+    .feature-item {
+      font-size: 12px;
+      opacity: 0.75;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .feature-item::before {
+      content: '✓';
+      color: #00ff9f;
+      font-weight: bold;
+    }
+    
+    @media (max-width: 768px) {
+      .header h1 { font-size: 36px; }
+      .header p { font-size: 16px; }
+      .cards { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
 <body>
-  <p>Redirecting to <a href="stock.html">stock.html</a>…</p>
+  <div class="container">
+    <div class="header">
+      <h1>📈 Stock Analysis Dashboard</h1>
+      <p>專業技術指標分析與回測工具</p>
+    </div>
+    
+    <div class="cards">
+      <a href="stock/stock.html" class="card">
+        <span class="card-icon">📊</span>
+        <h2 class="card-title">指標分析儀表板</h2>
+        <p class="card-desc">全方位技術指標分析工具，支援 KD、MA、MACD、RSI 等多種指標，並提供交易模擬器。</p>
+        <div class="features">
+          <div class="feature-item">即時指標計算與視覺化</div>
+          <div class="feature-item">多股票比較分析</div>
+          <div class="feature-item">交叉訊號自動偵測</div>
+          <div class="feature-item">回測模擬器 (含手續費/稅)</div>
+        </div>
+      </a>
+      
+      <a href="heatmap/heatmap.html" class="card">
+        <span class="card-icon">🔥</span>
+        <h2 class="card-title">參數優化熱力圖</h2>
+        <p class="card-desc">MA 參數熱力圖視覺化，快速找出最佳 Fast/Slow 組合，支援 255×255 全域搜尋。</p>
+        <div class="features">
+          <div class="feature-item">255×255 參數掃描</div>
+          <div class="feature-item">ROI / NAV 指標選擇</div>
+          <div class="feature-item">支援 SMA / WMA / EMA</div>
+          <div class="feature-item">一鍵匯出 CSV 結果</div>
+        </div>
+      </a>
+    </div>
+  </div>
 </body>
 </html>
