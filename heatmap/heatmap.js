@@ -1,4 +1,4 @@
-// Heatmap page: Fast 1..255 x Slow 1..255 using MA-cross simulator logic + Fee/Tax
+// Heatmap page: Fast 1..256 x Slow 1..256 using MA-cross simulator logic + Fee/Tax
 
 let stockNames = [];
 let stockSeries = {}; // name -> prices[]
@@ -229,7 +229,7 @@ function maxBuySharesWithFee(cash, price, feeRate, minFee, maxFee) {
   return lo;
 }
 
-// ---------- MA caches (compute O(255 * N) per type) ----------
+// ---------- MA caches (compute O(256 * N) per type) ----------
 let maCache = { MA: null, WMA: null, EMA: null };
 let maCacheN = 0;
 
@@ -262,7 +262,7 @@ function ensureMACache(type) {
       ps[i + 1] = ps[i] + (ok ? v : 0);
       nan[i + 1] = nan[i] + (ok ? 0 : 1);
     }
-    for (let p = 1; p <= 255; p++) {
+    for (let p = 1; p <= 256; p++) {
       const arr = new Float64Array(N);
       for (let i = 0; i < N; i++) {
         if (i < p - 1) { arr[i] = NaN; continue; }
@@ -275,7 +275,7 @@ function ensureMACache(type) {
       out[p] = arr;
     }
   } else if (type === 'WMA') {
-    for (let p = 1; p <= 255; p++) {
+    for (let p = 1; p <= 256; p++) {
       const arr = new Float64Array(N);
       const denom = (p * (p + 1)) / 2;
       let sum = 0;
@@ -318,7 +318,7 @@ function ensureMACache(type) {
       out[p] = arr;
     }
   } else if (type === 'EMA') {
-    for (let p = 1; p <= 255; p++) {
+    for (let p = 1; p <= 256; p++) {
       const arr = new Float64Array(N);
       for (let i = 0; i < N; i++) arr[i] = NaN;
       if (p - 1 >= N) { out[p] = arr; continue; }
@@ -366,7 +366,7 @@ function ensureMACache(type) {
 function simulatePair(fast, slow, opts) {
   const N = priceSeries.length;
   if (!N) return NaN;
-  if (!(fast >= 1 && fast <= 255 && slow >= 1 && slow <= 255)) return NaN;
+  if (!(fast >= 1 && fast <= 256 && slow >= 1 && slow <= 256)) return NaN;
   if (opts.onlyUpper && slow <= fast) return NaN;
 
   ensureMACache(opts.maType);
@@ -441,7 +441,7 @@ const lctx = legend.getContext('2d');
 const tip = document.getElementById('hmTip');
 const wrap = document.getElementById('hmCanvasWrap');
 
-let grid = new Float32Array(255 * 255);
+let grid = new Float32Array(256 * 256);
 let gridMin = NaN, gridMax = NaN;
 let lastCSV = '';
 
@@ -463,7 +463,7 @@ function colorFor(t) {
   const r = (a[1] + (b[1] - a[1]) * u) | 0;
   const g = (a[2] + (b[2] - a[2]) * u) | 0;
   const bl = (a[3] + (b[3] - a[3]) * u) | 0;
-  return [r, g, bl, 255];
+  return [r, g, bl, 256];
 }
 
 function drawLegend(minV, maxV) {
@@ -479,7 +479,7 @@ function drawLegend(minV, maxV) {
       img.data[k] = c[0];
       img.data[k+1] = c[1];
       img.data[k+2] = c[2];
-      img.data[k+3] = 255;
+      img.data[k+3] = 256;
     }
   }
   lctx.putImageData(img, 0, 0);
@@ -488,13 +488,17 @@ function drawLegend(minV, maxV) {
 }
 
 function renderHeatmap() {
-  const img = ctx.createImageData(255, 255);
+  const img = ctx.createImageData(256, 256);
   const minV = gridMin, maxV = gridMax;
-  for (let fy = 1; fy <= 255; fy++) {
-    for (let sx = 1; sx <= 255; sx++) {
-      const idx = (fy - 1) * 255 + (sx - 1);
+  // 交換軸：x 軸=fast, y 軸=slow
+  for (let sy = 1; sy <= 256; sy++) {  // slow, y 軸
+    for (let fx = 1; fx <= 256; fx++) {  // fast, x 軸
+      const idx = (fx - 1) * 256 + (sy - 1);
       const v = grid[idx];
-      const p = idx * 4;
+      // 反轉 y 軸：從 256~1 改為 1~256
+      const py = 256 - sy;
+      const px = fx - 1;
+      const p = (py * 256 + px) * 4;
       if (!Number.isFinite(v) || !Number.isFinite(minV) || !Number.isFinite(maxV) || maxV === minV) {
         img.data[p] = 0; img.data[p+1] = 0; img.data[p+2] = 0; img.data[p+3] = 0;
         continue;
@@ -504,7 +508,7 @@ function renderHeatmap() {
       img.data[p] = c[0];
       img.data[p+1] = c[1];
       img.data[p+2] = c[2];
-      img.data[p+3] = 255;
+      img.data[p+3] = 256;
     }
   }
   ctx.putImageData(img, 0, 0);
@@ -512,15 +516,15 @@ function renderHeatmap() {
 }
 
 function buildCSV() {
-  // CSV: rows = fast (1..255), cols = slow (1..255)
+  // CSV: rows = fast (1..256), cols = slow (1..256)
   const lines = [];
   const header = ['fast\\slow'];
-  for (let s = 1; s <= 255; s++) header.push(String(s));
+  for (let s = 1; s <= 256; s++) header.push(String(s));
   lines.push(header.join(','));
-  for (let f = 1; f <= 255; f++) {
+  for (let f = 1; f <= 256; f++) {
     const row = [String(f)];
-    for (let s = 1; s <= 255; s++) {
-      const v = grid[(f - 1) * 255 + (s - 1)];
+    for (let s = 1; s <= 256; s++) {
+      const v = grid[(f - 1) * 256 + (s - 1)];
       row.push(Number.isFinite(v) ? String(v) : '');
     }
     lines.push(row.join(','));
@@ -561,7 +565,7 @@ async function generateHeatmap() {
   // make sure MA cache computed once
   ensureMACache(maType);
 
-  grid = new Float32Array(255 * 255);
+  grid = new Float32Array(256 * 256);
   grid.fill(NaN);
   gridMin = NaN; gridMax = NaN;
 
@@ -570,17 +574,17 @@ async function generateHeatmap() {
   if (runBtn) runBtn.disabled = true;
   if (dlBtn) dlBtn.disabled = true;
 
-  const total = 255 * 255;
+  const total = 256 * 256;
   let done = 0;
 
   setProgress(true, 'Computing…', 0);
 
   // chunked loop to keep UI responsive
-  for (let f = 1; f <= 255; f++) {
+  for (let f = 1; f <= 256; f++) {
     // compute one fast-row per frame
     await new Promise(requestAnimationFrame);
 
-    for (let s = 1; s <= 255; s++) {
+    for (let s = 1; s <= 256; s++) {
       const v = simulatePair(f, s, {
         fund,
         from, to,
@@ -590,7 +594,7 @@ async function generateHeatmap() {
         onlyUpper,
         fee
       });
-      const idx = (f - 1) * 255 + (s - 1);
+      const idx = (f - 1) * 256 + (s - 1);
       grid[idx] = Number.isFinite(v) ? v : NaN;
       if (Number.isFinite(v)) {
         if (!Number.isFinite(gridMin) || v < gridMin) gridMin = v;
@@ -600,7 +604,7 @@ async function generateHeatmap() {
     }
 
     if (f % 4 === 0) {
-      setProgress(true, `Computing… (fast=${f}/255)`, (done / total) * 100);
+      setProgress(true, `Computing… (fast=${f}/256)`, (done / total) * 100);
     }
   }
 
@@ -619,11 +623,13 @@ function attachTooltip() {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const sx = Math.floor((x / rect.width) * 255) + 1;
-    const fy = Math.floor((y / rect.height) * 255) + 1;
-    if (sx < 1 || sx > 255 || fy < 1 || fy > 255) { tip.style.opacity = 0; return; }
+    // 交換軸：x=fast, y=slow
+    const fx = Math.floor((x / rect.width) * 256) + 1;
+    // 反轉 y 軸：從底部開始算起
+    const sy = 256 - Math.floor((y / rect.height) * 256);
+    if (fx < 1 || fx > 256 || sy < 1 || sy > 256) { tip.style.opacity = 0; return; }
 
-    const v = grid[(fy - 1) * 255 + (sx - 1)];
+    const v = grid[(fx - 1) * 256 + (sy - 1)];
     const metric = document.getElementById('hmMetric')?.value || 'roi';
     const vStr = Number.isFinite(v)
       ? (metric === 'roi' ? `${v.toFixed(2)}%` : v.toFixed(2))
@@ -632,7 +638,7 @@ function attachTooltip() {
     tip.style.left = `${x}px`;
     tip.style.top = `${y}px`;
     tip.style.opacity = 1;
-    tip.textContent = `fast=${fy}, slow=${sx} → ${vStr}`;
+    tip.textContent = `fast=${fx}, slow=${sy} → ${vStr}`;
   });
   wrap.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
 }

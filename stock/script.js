@@ -1818,6 +1818,39 @@ function runSimulator() {
       }
     }
   }
+  // FORCE CLOSE at end of range: if still holding shares, sell at the last bar close (index `to`)
+// This keeps NAV consistent with "must be flat at the end" backtests and makes results comparable.
+  if (shares > 0) {
+    const fi = to; // force close uses the last available close; no nextClose beyond `to`
+    const sellPx = priceSeries[fi];
+    if (Number.isFinite(sellPx)) {
+      const amount = shares * sellPx;
+
+      // Optional: if fee/tax helpers exist in your page, apply them; otherwise fee/tax = 0
+      let fee = 0;
+      let tax = 0;
+      if (typeof getSimFeeTaxParams === "function" &&
+          typeof calcFee === "function" &&
+          typeof calcTax === "function") {
+        const p = getSimFeeTaxParams();
+        const feeRate = Number.isFinite(p?.feeRate) ? p.feeRate : 0;
+        const feeMin  = Number.isFinite(p?.feeMin)  ? p.feeMin  : 0;
+        const feeMax  = Number.isFinite(p?.feeMax)  ? p.feeMax  : 1e100;
+
+        const taxRate = Number.isFinite(p?.taxRate) ? p.taxRate : 0;
+        const taxMin  = Number.isFinite(p?.taxMin)  ? p.taxMin  : 0;
+        const taxMax  = Number.isFinite(p?.taxMax)  ? p.taxMax  : 1e100;
+
+        fee = calcFee(amount, feeRate, feeMin, feeMax);
+        tax = calcTax(amount, taxRate, taxMin, taxMax);
+      }
+
+      cash += (amount - fee - tax);
+      rows.push({ side: "LAST_SELL", date: dates[fi], price: sellPx, shares, cash, fee, tax });
+      shares = 0;
+      trades++;
+    }
+  }
 
   const lastPx = priceSeries[to];
   const nav = cash + (shares > 0 && Number.isFinite(lastPx) ? shares * lastPx : 0);
