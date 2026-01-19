@@ -178,21 +178,48 @@ function numFrom(id, fallback) {
   return Number.isFinite(v) ? v : fallback;
 }
 
+// Default values (same as script.js)
+const DEFAULT_SIM_FEE_RATE = 0.001425;  // brokerage fee rate (buy & sell)
+const DEFAULT_SIM_FEE_MIN  = 0.0;       // minimum fee per trade
+const DEFAULT_SIM_FEE_MAX  = 1e100;     // cap (usually not needed)
+
+const DEFAULT_SIM_TAX_RATE = 0.0;       // transaction tax rate (usually sell-only)
+const DEFAULT_SIM_TAX_MIN  = 0.0;
+const DEFAULT_SIM_TAX_MAX  = 1e100;
+
+// Read simulator fee/tax parameters from navbar inputs (if they exist).
+// IDs (same as script.js): simFeeRate, simFeeMin, simFeeMax, simFeeDiscount, simTaxRate, simTaxMin, simTaxMax
 function getSimFeeTaxParams() {
-  const feeRate = numFrom('simFeeRate', 0.001425);
-  const feeMin  = numFrom('simFeeMin', 0.0);
-  const feeMax  = numFrom('simFeeMax', 1e100);
-  const feeDisc = numFrom('simFeeDiscount', 1.0);
+  const feeRateEl = document.getElementById("simFeeRate");
+  const feeMinEl  = document.getElementById("simFeeMin");
+  const feeMaxEl  = document.getElementById("simFeeMax");
+  const feeDiscEl = document.getElementById("simFeeDiscount"); // optional (e.g. 0.6)
 
-  const taxRate = numFrom('simTaxRate', 0.0);
-  const taxMin  = numFrom('simTaxMin', 0.0);
-  const taxMax  = numFrom('simTaxMax', 1e100);
+  const taxRateEl = document.getElementById("simTaxRate");
+  const taxMinEl  = document.getElementById("simTaxMin");
+  const taxMaxEl  = document.getElementById("simTaxMax");
 
-  return {
-    feeRate: feeRate * feeDisc,
-    feeMin, feeMax,
-    taxRate, taxMin, taxMax
-  };
+  let feeRate = parseFloat(feeRateEl?.value);
+  let feeMin  = parseFloat(feeMinEl?.value);
+  let feeMax  = parseFloat(feeMaxEl?.value);
+  let feeDisc = parseFloat(feeDiscEl?.value);
+
+  let taxRate = parseFloat(taxRateEl?.value);
+  let taxMin  = parseFloat(taxMinEl?.value);
+  let taxMax  = parseFloat(taxMaxEl?.value);
+
+  if (!Number.isFinite(feeRate) || feeRate < 0) feeRate = DEFAULT_SIM_FEE_RATE;
+  if (!Number.isFinite(feeMin)  || feeMin < 0)  feeMin  = DEFAULT_SIM_FEE_MIN;
+  if (!Number.isFinite(feeMax)  || feeMax <= 0) feeMax  = DEFAULT_SIM_FEE_MAX;
+
+  // optional discount multiplier
+  if (Number.isFinite(feeDisc) && feeDisc > 0) feeRate *= feeDisc;
+
+  if (!Number.isFinite(taxRate) || taxRate < 0) taxRate = DEFAULT_SIM_TAX_RATE;
+  if (!Number.isFinite(taxMin)  || taxMin < 0)  taxMin  = DEFAULT_SIM_TAX_MIN;
+  if (!Number.isFinite(taxMax)  || taxMax <= 0) taxMax  = DEFAULT_SIM_TAX_MAX;
+
+  return { feeRate, feeMin, feeMax, taxRate, taxMin, taxMax };
 }
 
 function clamp(x, lo, hi) {
@@ -201,35 +228,46 @@ function clamp(x, lo, hi) {
   return x;
 }
 
+// Calculate fee for a trade amount. (same logic as script.js)
 function calcFee(tradeAmount, feeRate, minFee, maxFee) {
   if (!Number.isFinite(tradeAmount) || tradeAmount <= 0) return 0;
-  const fee = clamp(tradeAmount * feeRate, minFee, maxFee);
-  return Number.isFinite(fee) ? fee : 0;
+  let fee = tradeAmount * feeRate;
+  if (Number.isFinite(minFee)) fee = Math.max(minFee, fee);
+  if (Number.isFinite(maxFee)) fee = Math.min(maxFee, fee);
+  return fee;
 }
 
+// Calculate tax for a trade amount (typically sell-only). (same logic as script.js)
 function calcTax(tradeAmount, taxRate, minTax, maxTax) {
   if (!Number.isFinite(tradeAmount) || tradeAmount <= 0) return 0;
-  const tax = clamp(tradeAmount * taxRate, minTax, maxTax);
-  return Number.isFinite(tax) ? tax : 0;
+  let tax = tradeAmount * taxRate;
+  if (Number.isFinite(minTax)) tax = Math.max(minTax, tax);
+  if (Number.isFinite(maxTax)) tax = Math.min(maxTax, tax);
+  return tax;
 }
 
-function maxBuySharesWithFee(cash, price, feeRate, minFee, maxFee) {
-  if (!(cash > 0) || !(price > 0)) return 0;
+// Given current cash & price, find max shares you can buy after including fee. (same as script.js)
+function maxBuySharesWithFee(cash, price, feeRate, feeMin, feeMax) {
+  if (!Number.isFinite(cash) || cash <= 0) return 0;
+  if (!Number.isFinite(price) || price <= 0) return 0;
+
   let hi = Math.floor(cash / price);
   if (hi <= 0) return 0;
+
   let lo = 0;
   while (lo < hi) {
-    const mid = ((lo + hi + 1) / 2) | 0;
-    const amt = mid * price;
-    const fee = calcFee(amt, feeRate, minFee, maxFee);
-    const cost = amt + fee;
-    if (cost <= cash) lo = mid;
+    const mid = Math.floor((lo + hi + 1) / 2);
+    const amount = mid * price;
+    const fee = calcFee(amount, feeRate, feeMin, feeMax);
+    const cost = amount + fee;
+    if (cost <= cash + 1e-12) lo = mid;
     else hi = mid - 1;
   }
   return lo;
 }
 
 // ---------- MA caches (compute O(256 * N) per type) ----------
+
 let maCache = { MA: null, WMA: null, EMA: null };
 let maCacheN = 0;
 
@@ -427,10 +465,24 @@ function simulatePair(fast, slow, opts) {
     }
   }
 
-  const lastPx = priceSeries[to];
-  const nav = cash + (shares > 0 && Number.isFinite(lastPx) ? shares * lastPx : 0);
-  if (opts.metric === 'nav') return nav;
-  return (nav - opts.fund) / opts.fund * 100;
+  // FORCE CLOSE at end of range: if still holding shares, sell at the last bar close (index `to`)
+// This keeps NAV consistent with "must be flat at the end" backtests and makes results comparable to script.js.
+if (shares > 0) {
+  const fi = to; // force close uses the last available close; no nextClose beyond `to`
+  const sellPx = priceSeries[fi];
+  if (Number.isFinite(sellPx)) {
+    const amount = shares * sellPx;
+    const fee = calcFee(amount, feeRate, feeMin, feeMax);
+    const tax = calcTax(amount, taxRate, taxMin, taxMax);
+    cash += (amount - fee - tax);
+    shares = 0;
+  }
+}
+
+const lastPx = priceSeries[to];
+const nav = cash + (shares > 0 && Number.isFinite(lastPx) ? shares * lastPx : 0);
+if (opts.metric === 'nav') return nav;
+return (nav - opts.fund) / opts.fund * 100;
 }
 
 // ---------- Heatmap rendering ----------
@@ -511,6 +563,9 @@ function renderHeatmap() {
       img.data[p+3] = 256;
     }
   }
+  heatmapReady = true;                 // ✅ 新增
+  const imgBtn = document.getElementById('hmDownloadImg');
+  if (imgBtn) imgBtn.disabled = false; // ✅ 新增
   ctx.putImageData(img, 0, 0);
   drawLegend(minV, maxV);
 }
@@ -571,8 +626,12 @@ async function generateHeatmap() {
 
   const runBtn = document.getElementById('hmRun');
   const dlBtn = document.getElementById('hmDownload');
+  const imgBtn = document.getElementById('hmDownloadImg');
+
+  heatmapReady = false;           // ✅ 新增
   if (runBtn) runBtn.disabled = true;
   if (dlBtn) dlBtn.disabled = true;
+  if (imgBtn) imgBtn.disabled = true;  // ✅ 新增
 
   const total = 256 * 256;
   let done = 0;
@@ -617,6 +676,25 @@ async function generateHeatmap() {
   if (dlBtn) dlBtn.disabled = false;
 }
 
+// ---------- Pick (fast, slow) on click ----------
+let pickedFast = null;
+let pickedSlow = null;
+let heatmapReady = false;
+
+function getFastSlowFromMouseEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  // 你的 tooltip 算法：x=fast, y=slow 且 y 反轉
+  const fx = Math.floor((x / rect.width) * 256) + 1;
+  const sy = 256 - Math.floor((y / rect.height) * 256);
+
+  if (fx < 1 || fx > 256 || sy < 1 || sy > 256) return null;
+  return { fast: fx, slow: sy };
+}
+
+
 // ---------- Tooltip ----------
 function attachTooltip() {
   wrap.addEventListener('mousemove', (e) => {
@@ -641,6 +719,7 @@ function attachTooltip() {
     tip.textContent = `fast=${fx}, slow=${sy} → ${vStr}`;
   });
   wrap.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
+
 }
 
 // ---------- Download CSV ----------
@@ -656,9 +735,87 @@ function downloadCSV() {
   URL.revokeObjectURL(url);
 }
 
+function sanitizeFilePart(s) {
+  // Windows 不允許 \ / : * ? " < > |
+  return String(s || '')
+    .replace(/[\\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, '_')
+    .trim();
+}
+
+function buildImageName(fast, slow) {
+  const stock = sanitizeFilePart(selectedStock || 'stock');
+  const ma = sanitizeFilePart(document.getElementById('hmMAType')?.value || 'MA');
+  const metric = sanitizeFilePart(document.getElementById('hmMetric')?.value || 'roi');
+  const fillMode = sanitizeFilePart(document.getElementById('simFill')?.value || 'signalClose');
+  const fund = sanitizeFilePart(document.getElementById('simFund')?.value || '100000');
+
+  const start = sanitizeFilePart(document.getElementById('simStartDate')?.value || 'NA');
+  const end = sanitizeFilePart(document.getElementById('simEndDate')?.value || 'NA');
+
+  // 檔名示例：
+  // heatmap_MMM_WMA_roi_signalClose_fund100000_2024-01-01_2024-12-31_fast12_slow55.png
+  return `heatmap_${stock}_${ma}_${metric}_${fillMode}_fund${fund}_${start}_${end}_fast${fast}_slow${slow}.png`;
+}
+
+function downloadHeatmapImage(customName) {
+  canvas.toBlob(blob => {
+    if (!blob) {
+      alert('下載失敗：canvas.toBlob() 取得圖片失敗');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = customName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+function downloadSelectedHeatmapImage() {
+  if (!heatmapReady) {
+    alert('請先生成熱力圖（按「生成熱力圖」）');
+    return;
+  }
+
+  const filename = buildImageName(pickedFast, pickedSlow);
+  downloadHeatmapImage(filename);
+}
+
+
+function downloadHeatmapImage(customName) {
+  const canvas = document.getElementById('hmCanvas');
+
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+
+    a.href = url;
+    a.download = customName;   // ← 檔名在這
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+function buildImageName(fast, slow) {
+  const stock = selectedStock || 'stock';
+  const ma = document.getElementById('hmMAType')?.value || 'MA';
+  const start = document.getElementById('simStartDate')?.value;
+  const end = document.getElementById('simEndDate')?.value;
+
+  return `heatmap_${stock}_${ma}_fast${fast}_slow${slow}_${start}_${end}.png`;
+}
+
+
 // ---------- Boot ----------
 document.getElementById('hmRun').addEventListener('click', generateHeatmap);
 document.getElementById('hmDownload').addEventListener('click', downloadCSV);
+document.getElementById('hmDownloadImg').addEventListener('click', downloadSelectedHeatmapImage);
 attachTooltip();
 
 loadCSV()
