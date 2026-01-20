@@ -4,28 +4,44 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>🔥 MA 參數熱力圖 | Stock Dashboard</title>
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
   <style>
+    body {
+      font-family: "Space Grotesk", "Roboto", system-ui, sans-serif;
+      background: radial-gradient(circle at 10% 20%, rgba(66,165,245,0.10), transparent 32%),
+                  radial-gradient(circle at 80% 0%, rgba(0,255,160,0.08), transparent 28%),
+                  var(--bg-color);
+      background-attachment: fixed;
+      color: var(--text-main);
+    }
+
     .hm-wrap{
-      max-width: 1200px;
-      margin: 20px auto;
-      padding: 0 16px;
+      max-width: 1280px;
+      margin: 24px auto 32px;
+      padding: 0 18px;
+      display:flex;
+      flex-direction:column;
+      gap:18px;
     }
 
     .hm-head{
       display:flex;
-      align-items:flex-end;
+      align-items:flex-start;
       justify-content:space-between;
-      gap:14px;
-      margin-bottom: 16px;
+      gap:16px;
+      padding: 14px 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      background: linear-gradient(135deg, rgba(32,32,32,0.8) 0%, rgba(18,18,18,0.9) 100%);
+      box-shadow: 0 16px 38px rgba(0,0,0,0.35);
     }
 
     .hm-title{
-      font-size: 20px;
+      font-size: 22px;
       font-weight: 700;
       letter-spacing:.3px;
-      background: linear-gradient(135deg, #90caf9 0%, #42a5f5 100%);
+      background: linear-gradient(135deg, #90caf9 0%, #42a5f5 50%, #00d9a3 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
@@ -34,49 +50,196 @@
     .hm-sub{
       opacity:.8;
       font-size: 13px;
-      margin-top: 6px;
-      line-height: 1.4;
+      margin-top: 8px;
+      line-height: 1.5;
+      max-width: 880px;
+    }
+
+    .hm-meta{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      margin-top: 12px;
+    }
+
+    .hm-pill{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(255,255,255,0.05);
+      color: #e6f3ff;
+      font-size: 12px;
+      letter-spacing: .2px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+
+    .hm-pill strong{ color: #90caf9; font-weight: 700; }
+
+    .hm-sidebar{
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 280px;
+      height: 100vh;
+      background: #1b1b1b;
+      border-right: 1px solid #333;
+      padding: 20px;
+      overflow-y: auto;
+      z-index: 1500;
+      transform: translateX(0);
+      transition: transform 0.3s ease;
+    }
+
+    .hm-sidebar.collapsed{
+      transform: translateX(-280px);
+    }
+
+    .hm-sidebar-header{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .hm-sidebar-header h2{
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--accent-strong);
+    }
+
+    .hm-sidebar-close{
+      background: none;
+      border: none;
+      color: #aaa;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 8px;
+      line-height: 1;
+      transition: color 0.2s ease;
+    }
+
+    .hm-sidebar-close:hover{
+      color: #fff;
+    }
+
+    .hm-sidebar-section{
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #333;
+    }
+
+    .hm-sidebar-section h3{
+      margin: 0 0 12px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .hm-sidebar label{
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      color: #ccc;
+      margin-bottom: 10px;
+    }
+
+    .hm-sidebar input,
+    .hm-sidebar select{
+      width: 100%;
+      padding: 6px 8px;
+      background: #222;
+      border: 1px solid #444;
+      border-radius: 6px;
+      color: white;
+      font-size: 12px;
+    }
+
+    .hm-sidebar input:focus,
+    .hm-sidebar select:focus{
+      border-color: var(--accent);
+      outline: none;
+    }
+
+    .hm-sidebar-toggle{
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      z-index: 2000;
+      background: var(--accent);
+      color: #000;
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+      font-size: 13px;
+      transition: transform 0.3s ease, background 0.2s ease;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+
+    .hm-sidebar-toggle:hover{
+      background: var(--accent-strong);
+    }
+
+    .hm-sidebar-toggle.shifted{
+      transform: translateX(280px);
+    }
+
+    .hm-wrap.shifted{
+      margin-left: 280px;
     }
 
     .hm-grid{
-      display:grid;
-      grid-template-columns: 440px 1fr;
+      display: grid;
+      grid-template-columns: 1fr 1.5fr;
       gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 1400px){ .hm-grid{ grid-template-columns: 1fr; } }
+
+    .hm-viz-section{
+      display: contents;
     }
 
-    @media (max-width: 980px){
-      .hm-grid{ grid-template-columns: 1fr; }
-    }
+
+
 
     .hm-card{
-      border: 1px solid rgba(255,255,255,0.12);
-      background: linear-gradient(135deg, rgba(30,30,30,0.95) 0%, rgba(20,20,20,0.95) 100%);
+      border: 1px solid rgba(255,255,255,0.10);
+      background: radial-gradient(circle at 15% 10%, rgba(255,255,255,0.03), transparent 34%),
+                  linear-gradient(135deg, rgba(26,26,26,0.95) 0%, rgba(18,18,18,0.95) 100%);
       border-radius: 16px;
-      padding: 16px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+      padding: 18px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.04);
       backdrop-filter: blur(10px);
-      transition: transform .2s ease, box-shadow .2s ease;
+      transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
     }
 
     .hm-card:hover{
-      transform: translateY(-2px);
-      box-shadow: 0 12px 36px rgba(0,0,0,0.4);
+      transform: translateY(-3px);
+      border-color: rgba(66,165,245,0.35);
+      box-shadow: 0 16px 40px rgba(0,0,0,0.42);
     }
 
     .hm-card h3{
       margin: 0 0 14px;
       font-size: 15px;
-      font-weight: 600;
-      opacity:.95;
+      font-weight: 700;
+      opacity:.96;
       letter-spacing:.3px;
       padding-bottom: 10px;
       border-bottom: 1px solid rgba(255,255,255,.08);
     }
 
     .hm-form{
-      display:grid;
-      grid-template-columns: repeat(2, minmax(160px, 1fr));
-      gap: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
     }
 
     @media (max-width: 520px){
@@ -95,8 +258,8 @@
     .hm-form input,
     .hm-form select{
       width:100%;
-      padding: 11px 12px;
-      border-radius: 12px;
+      padding: 8px 10px;
+      border-radius: 10px;
       border: 1px solid rgba(255,255,255,0.14);
       background: rgba(0,0,0,0.3);
       color: #eee;
@@ -126,10 +289,10 @@
     }
 
     .hm-btn{
-      padding: 11px 16px;
+      padding: 11px 18px;
       border-radius: 12px;
-      border: 1px solid rgba(0,255,160,0.3);
-      background: linear-gradient(135deg, rgba(0,255,160,0.15) 0%, rgba(0,255,160,0.08) 100%);
+      border: 1px solid rgba(0,255,160,0.32);
+      background: linear-gradient(135deg, rgba(0,255,160,0.18) 0%, rgba(0,255,160,0.10) 100%);
       color:#eafff7;
       cursor:pointer;
       font-weight:700;
@@ -139,9 +302,9 @@
     }
 
     .hm-btn:hover{
-      background: linear-gradient(135deg, rgba(0,255,160,0.22) 0%, rgba(0,255,160,0.12) 100%);
+      background: linear-gradient(135deg, rgba(0,255,160,0.24) 0%, rgba(0,255,160,0.14) 100%);
       transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(0,255,160,0.25);
+      box-shadow: 0 6px 14px rgba(0,255,160,0.28);
     }
 
     .hm-btn:active{
@@ -175,7 +338,7 @@
       display:grid;
       grid-template-columns: 1fr 75px;
       gap: 14px;
-      align-items:start;
+      align-items:stretch;
     }
 
     @media (max-width: 980px){
@@ -187,20 +350,21 @@
       width:100%;
       overflow:hidden;
       border-radius: 14px;
-      box-shadow: inset 0 2px 8px rgba(0,0,0,0.3);
+      background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+      box-shadow: inset 0 2px 10px rgba(0,0,0,0.34), 0 10px 24px rgba(0,0,0,0.28);
     }
 
     #hmCanvas{
       width: 100%;
       height: auto;
       image-rendering: pixelated;
-      border-radius: 14px;
       border: 1px solid rgba(255,255,255,0.14);
-      transition: transform .2s ease;
+      transition: transform .2s ease, box-shadow .2s ease;
     }
 
     #hmCanvas:hover{
       transform: scale(1.01);
+      box-shadow: 0 10px 24px rgba(0,0,0,0.32);
     }
 
     .hm-legend{
@@ -211,10 +375,34 @@
 
     #hmLegend{
       width: 75px;
-      height: 380px;
+      height: 400px;
       border-radius: 14px;
-      border: 1px solid rgba(255,255,255,0.14);
-      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      border: 1px solid rgba(255,255,255,0.12);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.26);
+    }
+
+    .hm-card{
+      height: calc(100vh - 220px);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .hm-card .hm-canvas-wrap{
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #hmCanvas{
+      max-height: 100%;
+      max-width: 100%;
+      object-fit: contain;
+    }
+
+    #hmPreview{
+      width: 100%;
+      height: 100%;
     }
 
     .hm-legend-text{
@@ -278,10 +466,10 @@
     }
 
     .hm-cost-grid{
-      display:grid;
-      grid-template-columns: repeat(2, minmax(160px, 1fr));
-      gap: 12px 14px;
-      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 10px;
     }
 
     @media (max-width: 520px){
@@ -299,67 +487,65 @@
   </style>
 </head>
 <body>
-  <div class="hm-wrap">
-    <div class="hm-head">
-      <div>
-        <div class="hm-title">🔥 MA 參數熱力圖：Fast (1–255) × Slow (1–255)</div>
-        <div class="hm-sub">使用 MA 交叉逻輯進行回測，繪製參數優化熱力圖（支援手續費 / 交易稅）</div>
-      </div>
+  <button class="hm-sidebar-toggle" id="hmSidebarToggle">☰ Menu</button>
+
+  <div class="hm-sidebar collapsed" id="hmSidebar">
+    <div class="hm-sidebar-header">
+      <h2>⚙ Settings</h2>
+      <button class="hm-sidebar-close" id="hmSidebarClose">✕</button>
     </div>
 
-    <div class="hm-grid">
-      <div class="hm-card">
-        <h3>⚙️ 模擬設定</h3>
+    <div class="hm-sidebar-section">
+      <h3>📊 基本設定</h3>
 
-        <div class="hm-form">
-          <label>📈 股票代號
-            <select id="stockSelect"></select>
-          </label>
+      <label>📈 股票代號
+        <select id="stockSelect"></select>
+      </label>
 
-          <label>📊 MA 類型
-            <select id="hmMAType">
-              <option value="MA">SMA (簡單移動平均)</option>
-              <option value="WMA">WMA (加權移動平均)</option>
-              <option value="EMA">EMA (指數移動平均)</option>
-            </select>
-          </label>
+      <label>📊 MA 類型
+        <select id="hmMAType">
+          <option value="MA">SMA (簡單移動平均)</option>
+          <option value="WMA">WMA (加權移動平均)</option>
+          <option value="EMA">EMA (指數移動平均)</option>
+        </select>
+      </label>
 
-          <label>📅 開始日期
-            <input id="simStartDate" type="date" />
-          </label>
+      <label>📅 開始日期
+        <input id="simStartDate" type="date" />
+      </label>
 
-          <label>📅 結束日期
-            <input id="simEndDate" type="date" />
-          </label>
+      <label>📅 結束日期
+        <input id="simEndDate" type="date" />
+      </label>
 
-          <label>💰 初始資金
-            <input id="simFund" type="number" step="1" value="100000" />
-          </label>
+      <label>💰 初始資金
+        <input id="simFund" type="number" step="1" value="100000" />
+      </label>
 
-          <label>🎯 成交價格
-            <select id="simFill">
-              <option value="signalClose">訊號當日收盤</option>
-              <option value="nextClose">次日收盤</option>
-            </select>
-          </label>
+      <label>🎯 成交價格
+        <select id="simFill">
+          <option value="signalClose">訊號當日收盤</option>
+          <option value="nextClose">次日收盤</option>
+        </select>
+      </label>
 
-          <label>📊 顯示指標
-            <select id="hmMetric">
-              <option value="roi">ROI (報酬率 %)</option>
-              <option value="nav">NAV (淨值)</option>
-            </select>
-          </label>
+      <label>📊 顯示指標
+        <select id="hmMetric">
+          <option value="roi">ROI (報酬率 %)</option>
+          <option value="nav">NAV (淨值)</option>
+        </select>
+      </label>
 
-          <label>🔺 只顯示 Slow > Fast
-            <select id="hmOnlyUpper" >
-              <option value="1" selected>是</option>
-              <option value="0">否</option>
-            </select>
-          </label>
-        </div>
+      <label>🔺 只顯示 Slow > Fast
+        <select id="hmOnlyUpper" >
+          <option value="1" selected>是</option>
+          <option value="0">否</option>
+        </select>
+      </label>
+    </div>
 
-        <div class="hm-cost-title">💰 交易成本設定</div>
-        <div class="hm-cost-grid">
+    <div class="hm-sidebar-section">
+      <h3>💰 交易成本設定</h3>
           <label>💵 手續費率
             <input id="simFeeRate" type="number" step="0.000001" value="0.001425">
           </label>
@@ -382,20 +568,37 @@
           <label>🔼 交易稅最高
             <input id="simTaxMax" type="number" step="0.01" value="1e100">
           </label>
-        </div>
+    </div>
 
-        <div class="hm-actions">
-          <button id="hmRun" class="hm-btn">🚀 生成熱力圖</button>
-          <button id="hmDownload" class="hm-btn hm-btn-secondary" disabled>📥 下載 CSV</button>
-          <button id="hmDownloadImg" class="hm-btn hm-btn-secondary" disabled>🖼️ 下載圖片</button>
-        </div>
+    <div class="hm-sidebar-section">
+      <h3>🚀 執行</h3>
+      <div class="hm-actions">
+      <button id="hmRun" class="hm-btn">🚀 生成熱力圖</button>
+      <button id="hmDownload" class="hm-btn hm-btn-secondary" disabled>📥 下載 CSV</button>
+      <button id="hmDownloadImg" class="hm-btn hm-btn-secondary" disabled>🖼️ 下載圖片</button>
+    </div>
 
-        <div class="hm-progress" id="hmProgressText" style="display:none;">⏳ 準備中…</div>
-        <div class="hm-progress-bar" style="margin-top:8px; display:none;" id="hmProgressBar">
-          <div id="hmProgressFill"></div>
+    <div class="hm-progress" id="hmProgressText" style="display:none;">⏳ 準備中…</div>
+    <div class="hm-progress-bar" style="margin-top:8px; display:none;" id="hmProgressBar">
+      <div id="hmProgressFill"></div>
+    </div>
+    </div>
+  </div>
+
+  <div class="hm-wrap">
+    <div class="hm-head">
+      <div>
+        <div class="hm-title">🔥 MA 參數熱力圖：Fast (1–255) × Slow (1–255)</div>
+        <div class="hm-sub">使用 MA 交叉逻輯進行回測，繪製參數優化熱力圖（支援手續費 / 交易稅）</div>
+        <div class="hm-meta">
+          <span class="hm-pill">範圍 <strong>65,025</strong> 組 fast/slow</span>
+          <span class="hm-pill">包含 <strong>費用與稅</strong> 模擬</span>
+          <span class="hm-pill">輸出 <strong>CSV</strong> / 圖片</span>
         </div>
       </div>
+    </div>
 
+    <div class="hm-grid">
       <div class="hm-card">
         <h3>📊 熱力圖視覺化</h3>
         <div class="hm-viz">
@@ -404,15 +607,44 @@
             <div class="hm-tooltip" id="hmTip"></div>
           </div>
           <div class="hm-legend">
-            <canvas id="hmLegend" width="70" height="360"></canvas>
+            <canvas id="hmLegend" width="70" height="400"></canvas>
             <div class="hm-legend-text"><span id="hmMin">—</span><span id="hmMax">—</span></div>
           </div>
         </div>
         <div class="hm-sub" style="margin-top:10px;">📋 <strong>座標說明：</strong>X 軸 = Slow period (1→255)，Y 軸 = Fast period (1→255)。色彩越深表示報酬越高。</div>
       </div>
+
+      <div class="hm-card">
+        <h3>🧭 Hover 交易預覽</h3>
+        <div class="hm-sub" id="hmPreviewInfo" style="margin-bottom:10px; opacity:.9;">
+          把滑鼠移到熱力圖上任一格，這裡會顯示該組 fast/slow 的交易圖。
+        </div>
+        <div class="hm-canvas-wrap">
+          <canvas id="hmPreview" width="900" height="400"></canvas>
+        </div>
+      </div>
     </div>
   </div>
 
   <script src="heatmap.js"></script>
+  <script>
+    // Sidebar toggle functionality
+    const hmSidebar = document.getElementById('hmSidebar');
+    const hmSidebarToggle = document.getElementById('hmSidebarToggle');
+    const hmSidebarClose = document.getElementById('hmSidebarClose');
+    const hmWrap = document.querySelector('.hm-wrap');
+
+    hmSidebarToggle.addEventListener('click', () => {
+      hmSidebar.classList.toggle('collapsed');
+      hmSidebarToggle.classList.toggle('shifted');
+      hmWrap.classList.toggle('shifted');
+    });
+
+    hmSidebarClose.addEventListener('click', () => {
+      hmSidebar.classList.add('collapsed');
+      hmSidebarToggle.classList.remove('shifted');
+      hmWrap.classList.remove('shifted');
+    });
+  </script>
 </body>
 </html>
