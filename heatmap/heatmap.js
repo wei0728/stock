@@ -72,7 +72,7 @@ function bindDateDefaults() {
   startEl.value = toISO(dates[back]);
 }
 
- // ---------- Date helpers ----------
+// ---------- Date helpers ----------
 
 // In your multistocks.csv, dates may be 'YYYY/MM/DD', 'M/D/YYYY', etc.
 // <input type="date"> needs 'YYYY-MM-DD', and your stock.html uses a robust dateToIndex().
@@ -466,23 +466,23 @@ function simulatePair(fast, slow, opts) {
   }
 
   // FORCE CLOSE at end of range: if still holding shares, sell at the last bar close (index `to`)
-// This keeps NAV consistent with "must be flat at the end" backtests and makes results comparable to script.js.
-if (shares > 0) {
-  const fi = to; // force close uses the last available close; no nextClose beyond `to`
-  const sellPx = priceSeries[fi];
-  if (Number.isFinite(sellPx)) {
-    const amount = shares * sellPx;
-    const fee = calcFee(amount, feeRate, feeMin, feeMax);
-    const tax = calcTax(amount, taxRate, taxMin, taxMax);
-    cash += (amount - fee - tax);
-    shares = 0;
+  // This keeps NAV consistent with "must be flat at the end" backtests and makes results comparable to script.js.
+  if (shares > 0) {
+    const fi = to; // force close uses the last available close; no nextClose beyond `to`
+    const sellPx = priceSeries[fi];
+    if (Number.isFinite(sellPx)) {
+      const amount = shares * sellPx;
+      const fee = calcFee(amount, feeRate, feeMin, feeMax);
+      const tax = calcTax(amount, taxRate, taxMin, taxMax);
+      cash += (amount - fee - tax);
+      shares = 0;
+    }
   }
-}
 
-const lastPx = priceSeries[to];
-const nav = cash + (shares > 0 && Number.isFinite(lastPx) ? shares * lastPx : 0);
-if (opts.metric === 'nav') return nav;
-return (nav - opts.fund) / opts.fund * 100;
+  const lastPx = priceSeries[to];
+  const nav = cash + (shares > 0 && Number.isFinite(lastPx) ? shares * lastPx : 0);
+  if (opts.metric === 'nav') return nav;
+  return (nav - opts.fund) / opts.fund * 100;
 }
 
 // ---------- Heatmap rendering ----------
@@ -492,6 +492,33 @@ const legend = document.getElementById('hmLegend');
 const lctx = legend.getContext('2d');
 const tip = document.getElementById('hmTip');
 const wrap = document.getElementById('hmCanvasWrap');
+
+// ---------- NEW: Hover preview trade chart (optional) ----------
+// 如果你的 heatmap.html 有加：
+// <canvas id="hmPreview"></canvas>
+// <div id="hmPreviewInfo"></div>
+// 就會啟用 hover 預覽交易圖；沒加的話會自動回退到原本 tooltip 行為。
+const previewCanvas = document.getElementById('hmPreview');
+const previewCtx = previewCanvas ? previewCanvas.getContext('2d') : null;
+const previewInfo = document.getElementById('hmPreviewInfo');
+
+// 高 DPI 支援 - 提高 canvas 解析度
+if (previewCanvas && previewCtx) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = previewCanvas.getBoundingClientRect();
+  // 設定實際像素大小
+  previewCanvas.width = rect.width * dpr;
+  previewCanvas.height = rect.height * dpr;
+  // 縮放繪圖上下文
+  previewCtx.scale(dpr, dpr);
+  // 保存邏輯尺寸供繪圖使用
+  previewCanvas._logicalWidth = rect.width;
+  previewCanvas._logicalHeight = rect.height;
+}
+
+let lastHoverKey = '';
+let hoverTimer = null;
+const previewCache = new Map(); // key -> result
 
 let grid = new Float32Array(256 * 256);
 let gridMin = NaN, gridMax = NaN;
@@ -603,7 +630,6 @@ function setProgress(on, text, pct) {
 async function generateHeatmap() {
   if (!priceSeries.length || !dates.length) return;
 
-
   const fund = Math.max(0, numFrom('simFund', 100000));
   const fillMode = document.getElementById('simFill')?.value || 'signalClose';
   const maType = document.getElementById('hmMAType')?.value || 'MA';
@@ -694,18 +720,370 @@ function getFastSlowFromMouseEvent(e) {
   return { fast: fx, slow: sy };
 }
 
+// ---------- NEW: trade preview simulation (does NOT modify simulatePair) ----------
+function simulatePairWithTrades(fast, slow, opts) {
+  const N = priceSeries.length;
+  if (!N) return null;
+  if (!(fast >= 1 && fast <= 256 && slow >= 1 && slow <= 256)) return null;
+  if (opts.onlyUpper && slow <= fast) return { invalid: true, reason: 'slow <= fast (onlyUpper=1)' };
 
-// ---------- Tooltip ----------
+  ensureMACache(opts.maType);
+  const fastArr = maCache[opts.maType][fast];
+  const slowArr = maCache[opts.maType][slow];
+  if (!fastArr || !slowArr) return null;
+
+  const from = opts.from;
+  const to = opts.to;
+  const fillNext = (opts.fillMode === 'nextClose');
+
+  const feeRate = opts.fee.feeRate;
+  const feeMin  = opts.fee.feeMin;
+  const feeMax  = opts.fee.feeMax;
+  const taxRate = opts.fee.taxRate;
+  const taxMin  = opts.fee.taxMin;
+  const taxMax  = opts.fee.taxMax;
+
+  let cash = opts.fund;
+  let shares = 0;
+
+  const buys = [];   // {i, px}
+  const sells = [];  // {i, px}
+  let trades = 0;
+
+  for (let i = from + 1; i <= to; i++) {
+    const f0 = fastArr[i - 1], s0 = slowArr[i - 1];
+    const f1 = fastArr[i],     s1 = slowArr[i];
+    if (!Number.isFinite(f0) || !Number.isFinite(s0) || !Number.isFinite(f1) || !Number.isFinite(s1)) continue;
+
+    const d0 = f0 - s0;
+    const d1 = f1 - s1;
+
+    const golden = (d0 < 0 && d1 > 0);
+    const death  = (d0 > 0 && d1 < 0);
+
+    // SELL
+    if (shares > 0 && death) {
+      const fi = fillNext ? ((i + 1 <= to) ? (i + 1) : -1) : i;
+      if (fi === -1) continue;
+      const px = priceSeries[fi];
+      if (!Number.isFinite(px)) continue;
+
+      const amount = shares * px;
+      const fee = calcFee(amount, feeRate, feeMin, feeMax);
+      const tax = calcTax(amount, taxRate, taxMin, taxMax);
+
+      cash += (amount - fee - tax);
+      sells.push({ i: fi, px });
+      shares = 0;
+      trades++;
+      continue;
+    }
+
+    // BUY
+    if (shares === 0 && golden) {
+      const fi = fillNext ? ((i + 1 <= to) ? (i + 1) : -1) : i;
+      if (fi === -1) continue;
+      const px = priceSeries[fi];
+      if (!Number.isFinite(px)) continue;
+
+      const canBuy = maxBuySharesWithFee(cash, px, feeRate, feeMin, feeMax);
+      if (canBuy > 0) {
+        const amount = canBuy * px;
+        const fee = calcFee(amount, feeRate, feeMin, feeMax);
+        cash -= (amount + fee);
+        shares = canBuy;
+        buys.push({ i: fi, px });
+      }
+    }
+  }
+
+  // FORCE CLOSE
+  if (shares > 0) {
+    const px = priceSeries[to];
+    if (Number.isFinite(px)) {
+      const amount = shares * px;
+      const fee = calcFee(amount, feeRate, feeMin, feeMax);
+      const tax = calcTax(amount, taxRate, taxMin, taxMax);
+      cash += (amount - fee - tax);
+      sells.push({ i: to, px });
+      shares = 0;
+      trades++;
+    }
+  }
+
+  const nav = cash;
+  const roi = (nav - opts.fund) / opts.fund * 100;
+
+  // Build series for drawing
+  const series = [];
+  let yMin = Infinity, yMax = -Infinity;
+
+  for (let i = from; i <= to; i++) {
+    const px = priceSeries[i];
+    const fa = fastArr[i];
+    const sa = slowArr[i];
+
+    series.push({ i, date: dates[i], px, fa, sa });
+
+    for (const v of [px, fa, sa]) {
+      if (Number.isFinite(v)) {
+        if (v < yMin) yMin = v;
+        if (v > yMax) yMax = v;
+      }
+    }
+  }
+
+  if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMax === yMin) {
+    yMin = 0; yMax = 1;
+  }
+
+  return { fast, slow, roi, nav, trades, series, buys, sells, yMin, yMax };
+}
+
+function clearPreviewCanvas(message) {
+  if (!previewCtx || !previewCanvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = previewCanvas._logicalWidth || previewCanvas.width / dpr;
+  const H = previewCanvas._logicalHeight || previewCanvas.height / dpr;
+  previewCtx.clearRect(0, 0, W * dpr, H * dpr);
+  if (message) {
+    previewCtx.globalAlpha = 0.9;
+    previewCtx.fillStyle = '#999';
+    previewCtx.font = '13px sans-serif';
+    previewCtx.fillText(message, 12, 20);
+    previewCtx.globalAlpha = 1;
+  }
+}
+
+function drawPreview(res) {
+  if (!previewCtx || !previewCanvas) return;
+
+  // 使用邏輯尺寸（高 DPI 支援）
+  const dpr = window.devicePixelRatio || 1;
+  const W = previewCanvas._logicalWidth || previewCanvas.width / dpr;
+  const H = previewCanvas._logicalHeight || previewCanvas.height / dpr;
+  previewCtx.clearRect(0, 0, W * dpr, H * dpr);
+
+  if (!res) {
+    clearPreviewCanvas('No data');
+    return;
+  }
+  if (res.invalid) {
+    clearPreviewCanvas(res.reason || 'invalid');
+    return;
+  }
+
+  const padL = 55, padR = 14, padT = 16, padB = 36;
+  const x0 = padL, x1 = W - padR;
+  const y0 = padT, y1 = H - padB;
+
+  const n = res.series.length;
+  const yMin = res.yMin, yMax = res.yMax;
+
+  const xOf = (k) => x0 + (k * (x1 - x0)) / Math.max(1, n - 1);
+  const yOf = (v) => y1 - ((v - yMin) * (y1 - y0)) / (yMax - yMin);
+
+  // 繪製網格和座標軸數字
+  previewCtx.strokeStyle = 'rgba(255,255,255,0.1)';
+  previewCtx.fillStyle = '#999';
+  previewCtx.font = '10px sans-serif';
+  previewCtx.textAlign = 'right';
+  previewCtx.textBaseline = 'middle';
+
+  // Y軸網格線和數字 (價格)
+  const yTicks = 5;
+  for (let i = 0; i <= yTicks; i++) {
+    const val = yMin + (yMax - yMin) * (i / yTicks);
+    const y = yOf(val);
+    // 網格線
+    previewCtx.globalAlpha = 0.3;
+    previewCtx.beginPath();
+    previewCtx.moveTo(x0, y);
+    previewCtx.lineTo(x1, y);
+    previewCtx.stroke();
+    // 數字
+    previewCtx.globalAlpha = 0.8;
+    previewCtx.fillText(val.toFixed(1), x0 - 6, y);
+  }
+
+  // X軸網格線和數字 (日期)
+  previewCtx.textAlign = 'center';
+  previewCtx.textBaseline = 'top';
+  const xTicks = Math.min(6, n - 1);
+  for (let i = 0; i <= xTicks; i++) {
+    const k = Math.round(i * (n - 1) / xTicks);
+    const x = xOf(k);
+    // 網格線
+    previewCtx.globalAlpha = 0.3;
+    previewCtx.beginPath();
+    previewCtx.moveTo(x, y0);
+    previewCtx.lineTo(x, y1);
+    previewCtx.stroke();
+    // 日期
+    previewCtx.globalAlpha = 0.8;
+    if (res.series[k] && res.series[k].date) {
+      const dateStr = res.series[k].date.slice(5); // MM-DD
+      previewCtx.fillText(dateStr, x, y1 + 6);
+    }
+  }
+
+  // axes
+  previewCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+  previewCtx.globalAlpha = 1;
+  previewCtx.beginPath();
+  previewCtx.moveTo(x0, y0);
+  previewCtx.lineTo(x0, y1);
+  previewCtx.lineTo(x1, y1);
+  previewCtx.stroke();
+
+  function drawLine(getV) {
+    previewCtx.beginPath();
+    let started = false;
+    for (let k = 0; k < n; k++) {
+      const v = getV(res.series[k]);
+      if (!Number.isFinite(v)) { started = false; continue; }
+      const x = xOf(k);
+      const y = yOf(v);
+      if (!started) { previewCtx.moveTo(x, y); started = true; }
+      else previewCtx.lineTo(x, y);
+    }
+    previewCtx.stroke();
+  }
+
+  // price / fast / slow (透明度區分)
+  previewCtx.lineWidth = 2;
+  previewCtx.globalAlpha = 1.0;
+  previewCtx.strokeStyle = '#90caf9'; // 藍色 - 價格線
+  drawLine(p => p.px);
+
+  previewCtx.lineWidth = 1.5;
+  previewCtx.globalAlpha = 0.9;
+  previewCtx.strokeStyle = '#00ffa0'; // 綠色 - 快線 (fast MA)
+  drawLine(p => p.fa);
+
+  previewCtx.lineWidth = 1.5;
+  previewCtx.globalAlpha = 0.9;
+  previewCtx.strokeStyle = '#ff6b6b'; // 紅色 - 慢線 (slow MA)
+  drawLine(p => p.sa);
+
+  previewCtx.globalAlpha = 1;
+
+  function drawPoints(arr, isBuy) {
+    previewCtx.fillStyle = isBuy ? '#00ffa0' : '#ff6b6b'; // 綠色買入，紅色賣出
+    for (const p of arr) {
+      const k = p.i - res.series[0].i;
+      if (k < 0 || k >= n) continue;
+      const x = xOf(k);
+      const y = yOf(p.px);
+      previewCtx.beginPath();
+      previewCtx.arc(x, y, 5, 0, Math.PI * 2);
+      previewCtx.fill();
+      previewCtx.fillStyle = isBuy ? '#00ffa0' : '#ff6b6b';
+      previewCtx.font = 'bold 10px sans-serif';
+      previewCtx.fillText(isBuy ? 'B' : 'S', x + 7, y - 7);
+    }
+  }
+
+  drawPoints(res.buys, true);
+  drawPoints(res.sells, false);
+
+  // 繪製圖例 (Legend)
+  const legendX = x1 - 180;
+  const legendY = y0 + 8;
+  const lineLen = 20;
+  const legendItems = [
+    { color: '#90caf9', label: 'Price' },
+    { color: '#00ffa0', label: `Fast MA (${res.fast})` },
+    { color: '#ff6b6b', label: `Slow MA (${res.slow})` }
+  ];
+
+  previewCtx.font = '11px sans-serif';
+  previewCtx.globalAlpha = 0.85;
+  
+  // 半透明背景
+  previewCtx.fillStyle = 'rgba(0,0,0,0.6)';
+  previewCtx.fillRect(legendX - 8, legendY - 12, 175, legendItems.length * 18 + 10);
+  
+  legendItems.forEach((item, i) => {
+    const ly = legendY + i * 18;
+    // 線條
+    previewCtx.strokeStyle = item.color;
+    previewCtx.lineWidth = 2;
+    previewCtx.beginPath();
+    previewCtx.moveTo(legendX, ly);
+    previewCtx.lineTo(legendX + lineLen, ly);
+    previewCtx.stroke();
+    // 文字
+    previewCtx.fillStyle = '#eee';
+    previewCtx.fillText(item.label, legendX + lineLen + 6, ly + 4);
+  });
+
+  previewCtx.globalAlpha = 1;
+}
+
+function updatePreviewFor(fx, sy) {
+  if (!previewCtx || !previewCanvas) return;
+
+  const fund = Math.max(0, numFrom('simFund', 100000));
+  const fillMode = document.getElementById('simFill')?.value || 'signalClose';
+  const maType = document.getElementById('hmMAType')?.value || 'MA';
+  const onlyUpper = (document.getElementById('hmOnlyUpper')?.value || '1') === '1';
+
+  const startIdx = toIndexOrDefault(document.getElementById('simStartDate')?.value, 0);
+  const endIdx = toIndexOrDefault(document.getElementById('simEndDate')?.value, dates.length - 1);
+  const from = Math.max(0, Math.min(startIdx, endIdx));
+  const to = Math.min(dates.length - 1, Math.max(startIdx, endIdx));
+
+  const fee = getSimFeeTaxParams();
+
+  const key = `${selectedStock}|${maType}|${fillMode}|${fund}|${from}|${to}|${onlyUpper}|${fx}|${sy}`;
+  if (key === lastHoverKey) return;
+  lastHoverKey = key;
+
+  clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => {
+    let res = previewCache.get(key);
+    if (!res) {
+      res = simulatePairWithTrades(fx, sy, { fund, from, to, fillMode, maType, onlyUpper, fee });
+      previewCache.set(key, res);
+    }
+
+    if (previewInfo) {
+      if (!res) previewInfo.textContent = `fast=${fx}, slow=${sy}（無資料）`;
+      else if (res.invalid) previewInfo.textContent = `fast=${fx}, slow=${sy}（${res.reason}）`;
+      else previewInfo.textContent = `${maType} fast=${fx}, slow=${sy} ｜ ROI=${res.roi.toFixed(2)}% ｜ Trades=${res.trades}`;
+    }
+
+    drawPreview(res);
+  }, 50);
+}
+
+// ---------- Tooltip / Hover behavior ----------
 function attachTooltip() {
+  const hasPreview = !!(previewCanvas && previewCtx);
+
   wrap.addEventListener('mousemove', (e) => {
+    // 用同一套座標轉換（避免你之後改軸時兩邊不同步）
+    const picked = getFastSlowFromMouseEvent(e);
+    if (!picked) {
+      tip.style.opacity = 0;
+      if (hasPreview) clearPreviewCanvas('Hover heatmap cell…');
+      return;
+    }
+
+    // 如果你有加 hmPreview：就改成更新交易圖，不顯示 tooltip
+    if (hasPreview) {
+      tip.style.opacity = 0;
+      updatePreviewFor(picked.fast, picked.slow);
+      return;
+    }
+
+    // 沒有 hmPreview：維持原本 tooltip 行為（避免你還沒加 HTML 就壞掉）
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    // 交換軸：x=fast, y=slow
-    const fx = Math.floor((x / rect.width) * 256) + 1;
-    // 反轉 y 軸：從底部開始算起
-    const sy = 256 - Math.floor((y / rect.height) * 256);
-    if (fx < 1 || fx > 256 || sy < 1 || sy > 256) { tip.style.opacity = 0; return; }
+    const fx = picked.fast;
+    const sy = picked.slow;
 
     const v = grid[(fx - 1) * 256 + (sy - 1)];
     const metric = document.getElementById('hmMetric')?.value || 'roi';
@@ -718,8 +1096,11 @@ function attachTooltip() {
     tip.style.opacity = 1;
     tip.textContent = `fast=${fx}, slow=${sy} → ${vStr}`;
   });
-  wrap.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
 
+  wrap.addEventListener('mouseleave', () => {
+    tip.style.opacity = 0;
+    if (previewInfo) previewInfo.textContent = '把滑鼠移到熱力圖上任一格，這裡會顯示該組 fast/slow 的交易圖。';
+  });
 }
 
 // ---------- Download CSV ----------
@@ -785,7 +1166,6 @@ function downloadSelectedHeatmapImage() {
   downloadHeatmapImage(filename);
 }
 
-
 function downloadHeatmapImage(customName) {
   const canvas = document.getElementById('hmCanvas');
 
@@ -811,7 +1191,6 @@ function buildImageName(fast, slow) {
   return `heatmap_${stock}_${ma}_fast${fast}_slow${slow}_${start}_${end}.png`;
 }
 
-
 // ---------- Boot ----------
 document.getElementById('hmRun').addEventListener('click', generateHeatmap);
 document.getElementById('hmDownload').addEventListener('click', downloadCSV);
@@ -821,7 +1200,9 @@ attachTooltip();
 loadCSV()
   .then(() => {
     resetMACache();
-    })
+    // 預覽區（如果存在）先清一下
+    if (previewCtx && previewCanvas) clearPreviewCanvas('Hover heatmap cell…');
+  })
   .catch(err => {
     console.error(err);
     alert('multistocks.csv 讀取失敗：請確認 heatmap.html 與 multistocks.csv 在同一層、且用伺服器方式開啟（不要 file://）。');
