@@ -62,7 +62,7 @@ function clampKD(x) {
 
 // ============= 自動讀 multistocks.csv（MA / RSI / KD 用） =============
 
-fetch("../multistocks.csv")
+fetch("../DJIA_stock_30_2014-202512.csv")
   .then(response => {
     if (!response.ok) throw new Error("multistocks.csv not found");
     return response.text();
