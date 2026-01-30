@@ -2,27 +2,97 @@
 
 let stockNames = [];
 let stockSeries = {}; // name -> prices[]
+let volumeSeriesAll = {}; // name -> volumes[]
 let dates = [];
 let selectedStock = null;
 let priceSeries = [];
+let volumeSeries = [];
 
-// ---------- CSV load (same format as multistocks.csv in your project) ----------
+// csv 資料夾中的股票列表
+const STOCK_LIST = [
+  "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
+  "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
+  "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT"
+];
+
+// ---------- CSV load (新格式: date,close,volume) ----------
+
+// 解析單一股票 CSV (date,close,volume)
+function parseSingleStockCSV(text, stockName) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return { dates: [], prices: [], volumes: [] };
+
+  const localDates = [];
+  const prices = [];
+  const volumes = [];
+
+  // 跳過 header
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    if (cols.length < 3) continue;
+
+    localDates.push(cols[0].trim());
+    const price = parseFloat(cols[1]);
+    const volume = parseFloat(cols[2]);
+    prices.push(!isNaN(price) ? price : NaN);
+    volumes.push(!isNaN(volume) ? volume : NaN);
+  }
+
+  return { dates: localDates, prices, volumes };
+}
+
+// 載入單一股票的資料
+async function loadStockData(stockName) {
+  try {
+    const resp = await fetch(`../csv/${stockName}_history.csv`);
+    if (!resp.ok) throw new Error(`${stockName}_history.csv not found`);
+    const text = await resp.text();
+    const { dates: localDates, prices, volumes } = parseSingleStockCSV(text, stockName);
+
+    stockSeries[stockName] = prices;
+    volumeSeriesAll[stockName] = volumes;
+
+    // 如果是目前選的股票，更新全域資料
+    if (selectedStock === stockName || selectedStock === null) {
+      selectedStock = stockName;
+      dates = localDates;
+      priceSeries = prices;
+      volumeSeries = volumes;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn(`載入 ${stockName} 失敗:`, err);
+    return false;
+  }
+}
+
+// 初始化：載入股票列表和第一個股票的資料
 async function loadCSV() {
-  const resp = await fetch('../multistocks.csv');
-  if (!resp.ok) throw new Error('multistocks.csv not found');
-  const text = await resp.text();
-  parseMultiStockCSV(text);
+  stockNames = [...STOCK_LIST];
   populateStockSelect();
+
+  // 先載入第一個股票
+  if (stockNames.length > 0) {
+    selectedStock = stockNames[0];
+    await loadStockData(selectedStock);
+  }
+
   bindDateDefaults();
 }
 
+// 保留舊的 parseMultiStockCSV 作為備用
 function parseMultiStockCSV(text) {
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) return;
   const header = lines[0].split(',').map(s => s.trim());
   stockNames = header.slice(1);
   stockSeries = {};
-  stockNames.forEach(n => (stockSeries[n] = []));
+  volumeSeriesAll = {};
+  stockNames.forEach(n => {
+    stockSeries[n] = [];
+    volumeSeriesAll[n] = [];
+  });
   dates = [];
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(',');
@@ -32,11 +102,13 @@ function parseMultiStockCSV(text) {
       const name = stockNames[j - 1];
       const v = parseFloat(cols[j]);
       stockSeries[name].push(Number.isFinite(v) ? v : NaN);
+      volumeSeriesAll[name].push(NaN);
     }
   }
   if (stockNames.length) {
     selectedStock = stockNames[0];
     priceSeries = stockSeries[selectedStock];
+    volumeSeries = volumeSeriesAll[selectedStock] || [];
   }
 }
 
@@ -50,9 +122,19 @@ function populateStockSelect() {
     sel.appendChild(opt);
   });
   sel.value = selectedStock || '';
-  sel.addEventListener('change', () => {
+  sel.addEventListener('change', async () => {
     selectedStock = sel.value;
-    priceSeries = stockSeries[selectedStock] || [];
+
+    // 如果還沒載入過這個股票的資料，先載入
+    if (!stockSeries[selectedStock] || stockSeries[selectedStock].length === 0) {
+      await loadStockData(selectedStock);
+    } else {
+      priceSeries = stockSeries[selectedStock] || [];
+      volumeSeries = volumeSeriesAll[selectedStock] || [];
+      // 需要重新載入日期（因為每個股票可能日期不同）
+      await loadStockData(selectedStock);
+    }
+
     // reset caches when stock changes
     resetMACache();
   });
