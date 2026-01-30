@@ -1,10 +1,19 @@
-// 全部指標（KD / MA / RSI）都使用 multistocks.csv 的 Close
+// 全部指標（KD / MA / RSI）都使用 csv 資料夾的股票資料
 let stockNames = [];      // ["AAPL","MSFT",...]
 let stockSeries = {};     // { "AAPL": [prices...], ... }
+let volumeSeriesAll = {}; // { "AAPL": [volumes...], ... }
 let selectedStock = null; // 目前選的股票名稱
 let priceSeries = [];     // 當前選股的價位序列 (Close)
+let volumeSeries = [];    // 當前選股的成交量序列 (Volume)
 let TOTAL_DAYS = 0;       // 資料長度
 let dates = [];           // 日期字串（與 priceSeries 同長度）
+
+// csv 資料夾中的股票列表
+const STOCK_LIST = [
+  "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
+  "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
+  "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT"
+];
 
 // KD / MA 指標資料
 let period = 3.0;         // KD：K/D 平滑固定 3 → α = 1/3
@@ -21,6 +30,7 @@ let macdLine   = [];
 let macdSignal = [];
 let macdHist   = [];
 let macdChart  = null;
+let volumeChart = null;
 
 // KD 交叉
 let kdGolden = [];
@@ -60,26 +70,79 @@ function clampKD(x) {
 }
 
 
-// ============= 自動讀 multistocks.csv（MA / RSI / KD 用） =============
+// ============= 自動讀取 csv 資料夾的股票資料 =============
 
-fetch("../DJIA_stock_30_2014-202512.csv")
-  .then(response => {
-    if (!response.ok) throw new Error("multistocks.csv not found");
-    return response.text();
-  })
-  .then(text => {
-    console.log("自動載入 multistocks.csv");
-    parseMultiStockCSV(text);
-    populateStockSelect();
+// 解析單一股票 CSV (date,close,volume)
+function parseSingleStockCSV(text, stockName) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return { dates: [], prices: [], volumes: [] };
+
+  const localDates = [];
+  const prices = [];
+  const volumes = [];
+
+  // 跳過 header
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    if (cols.length < 3) continue;
+
+    localDates.push(cols[0].trim());
+    const price = parseFloat(cols[1]);
+    const volume = parseFloat(cols[2]);
+    prices.push(!isNaN(price) ? price : NaN);
+    volumes.push(!isNaN(volume) ? volume : NaN);
+  }
+
+  return { dates: localDates, prices, volumes };
+}
+
+// 載入單一股票的資料
+async function loadStockData(stockName) {
+  try {
+    const resp = await fetch(`../csv/${stockName}_history.csv`);
+    if (!resp.ok) throw new Error(`${stockName}_history.csv not found`);
+    const text = await resp.text();
+    const { dates: localDates, prices, volumes } = parseSingleStockCSV(text, stockName);
+
+    stockSeries[stockName] = prices;
+    volumeSeriesAll[stockName] = volumes;
+
+    // 如果是第一個載入的或目前選的股票，更新全域資料
+    if (selectedStock === stockName || selectedStock === null) {
+      selectedStock = stockName;
+      dates = localDates;
+      priceSeries = prices;
+      volumeSeries = volumes;
+      TOTAL_DAYS = prices.length;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn(`載入 ${stockName} 失敗:`, err);
+    return false;
+  }
+}
+
+// 初始載入所有股票名稱，但只載入第一個股票的完整資料
+async function initStockData() {
+  stockNames = [...STOCK_LIST];
+  populateStockSelect();
+
+  // 先載入第一個股票
+  if (stockNames.length > 0) {
+    selectedStock = stockNames[0];
+    await loadStockData(selectedStock);
     computeAll();
     updateCharts();
-  })
-  .catch((err) => {
-    console.log("multistocks.csv 讀取失敗（可能是本地開啟或檔案不存在）:", err);
-  });
+  }
+}
+
+initStockData().catch(err => {
+  console.log("初始化股票資料失敗:", err);
+});
 
 
-// ============= 檔案上傳（用使用者上傳的 multistocks 取代原本資料） =============
+// ============= 檔案上傳（支援新格式 date,close,volume 或舊格式 multistocks） =============
 
 const csvFileEl = document.getElementById("csvFile");
 if (csvFileEl) {
@@ -92,8 +155,36 @@ if (csvFileEl) {
 
     const reader = new FileReader();
     reader.onload = function () {
-      parseMultiStockCSV(reader.result);
-      populateStockSelect();
+      const text = reader.result;
+      const firstLine = text.trim().split(/\r?\n/)[0].toLowerCase();
+
+      // 判斷是新格式 (date,close,volume) 還是舊格式 (date,stock1,stock2,...)
+      if (firstLine.includes("close") && firstLine.includes("volume")) {
+        // 新格式：單一股票 CSV
+        const stockName = file.name.replace(/_history\.csv$/i, "").replace(/\.csv$/i, "").toUpperCase();
+        const { dates: localDates, prices, volumes } = parseSingleStockCSV(text, stockName);
+
+        stockSeries[stockName] = prices;
+        volumeSeriesAll[stockName] = volumes;
+
+        if (!stockNames.includes(stockName)) {
+          stockNames.push(stockName);
+        }
+
+        selectedStock = stockName;
+        dates = localDates;
+        priceSeries = prices;
+        volumeSeries = volumes;
+        TOTAL_DAYS = prices.length;
+
+        populateStockSelect();
+        document.getElementById("stockSelect").value = stockName;
+      } else {
+        // 舊格式：multistocks CSV
+        parseMultiStockCSV(text);
+        populateStockSelect();
+      }
+
       computeAll();
       updateCharts();
     };
@@ -106,10 +197,21 @@ if (csvFileEl) {
 
 const stockSelectEl = document.getElementById("stockSelect");
 if (stockSelectEl) {
-  stockSelectEl.addEventListener("change", function (e) {
+  stockSelectEl.addEventListener("change", async function (e) {
     const name = e.target.value;
     selectedStock = name;
-    priceSeries = stockSeries[name] || [];
+
+    // 如果還沒載入過這個股票的資料，先載入
+    if (!stockSeries[name] || stockSeries[name].length === 0) {
+      await loadStockData(name);
+    } else {
+      // 使用已載入的資料
+      priceSeries = stockSeries[name] || [];
+      volumeSeries = volumeSeriesAll[name] || [];
+      // 需要重新載入日期（因為每個股票可能日期不同）
+      await loadStockData(name);
+    }
+
     TOTAL_DAYS = priceSeries.length;
     computeAll();
     updateCharts();
@@ -127,8 +229,10 @@ function parseMultiStockCSV(text) {
   stockNames = header.slice(1); // 第一欄是日期
 
   stockSeries = {};
+  volumeSeriesAll = {};
   stockNames.forEach(name => {
     stockSeries[name] = [];
+    volumeSeriesAll[name] = []; // 舊格式沒有 volume
   });
 
   dates = [];
@@ -143,6 +247,7 @@ function parseMultiStockCSV(text) {
       const name = stockNames[j - 1];
       const val = parseFloat(cols[j]);
       stockSeries[name].push(!isNaN(val) ? val : NaN);
+      volumeSeriesAll[name].push(NaN); // 舊格式沒有 volume
     }
   }
 
@@ -150,6 +255,7 @@ function parseMultiStockCSV(text) {
   if (stockNames.length > 0) {
     selectedStock = stockNames[0];
     priceSeries = stockSeries[selectedStock];
+    volumeSeries = volumeSeriesAll[selectedStock] || [];
     TOTAL_DAYS = priceSeries.length;
   }
 }
@@ -713,6 +819,11 @@ function updateKDChart() {
             position: "top",
             labels: { color: "#eeeeee", usePointStyle: true, pointStyle: "line" }
           },
+          tooltip: { callbacks: { title: (items) => {
+            const item = items[0];
+            const idx = item.raw && typeof item.raw.x === 'number' ? item.raw.x : item.dataIndex;
+            return dates[idx] || "";
+          } } },
           zoom: {
             pan: { enabled: true, mode: "x", modifierKey: "ctrl" },
             zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: "x" }
@@ -932,7 +1043,11 @@ function updateMAChart() {
         animation: false,
         plugins: {
           legend: { position: "top", labels: { color: "#eeeeee", usePointStyle: true } },
-          annotation: { drawTime: "beforeDatasetsDraw", annotations: shadedBoxes },
+          tooltip: { callbacks: { title: (items) => {
+            const item = items[0];
+            const idx = item.raw && typeof item.raw.x === 'number' ? item.raw.x : item.dataIndex;
+            return dates[idx] || "";
+          } } },
           zoom: {
             pan: { enabled: true, mode: "x", modifierKey: "ctrl" },
             zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: "x" }
@@ -953,6 +1068,104 @@ function updateMAChart() {
       }
     });
   }
+}
+
+// ============= Volume 成交量圖表 =============
+
+function updateVolumeChart() {
+  const canvas = document.getElementById("volumeChart");
+  if (!canvas) return;
+  if (TOTAL_DAYS === 0 || !volumeSeries || volumeSeries.length === 0) return;
+
+  const labels = [...Array(TOTAL_DAYS).keys()];
+
+  // 根據價格漲跌決定長條顏色
+  const barColors = volumeSeries.map((vol, i) => {
+    if (i === 0) return "rgba(158, 158, 158, 0.7)"; // 第一天無法比較
+    const prevPrice = priceSeries[i - 1];
+    const currPrice = priceSeries[i];
+    if (!Number.isFinite(prevPrice) || !Number.isFinite(currPrice)) {
+      return "rgba(158, 158, 158, 0.7)";
+    }
+    if (currPrice > prevPrice) return "rgba(76, 175, 80, 0.7)";  // 上漲綠色
+    if (currPrice < prevPrice) return "rgba(244, 67, 54, 0.7)";  // 下跌紅色
+    return "rgba(158, 158, 158, 0.7)"; // 平盤灰色
+  });
+
+  if (volumeChart) {
+    volumeChart.data.labels = labels;
+    volumeChart.data.datasets[0].data = volumeSeries;
+    volumeChart.data.datasets[0].backgroundColor = barColors;
+
+    volumeChart.options.scales.x.min = chartStart;
+    volumeChart.options.scales.x.max = chartEnd;
+
+    volumeChart.update("none");
+    return;
+  }
+
+  const ctx = canvas.getContext("2d");
+  volumeChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        label: "Volume",
+        data: volumeSeries,
+        backgroundColor: barColors,
+        borderWidth: 0,
+        barPercentage: 0.8,
+        categoryPercentage: 0.9
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "nearest", axis: "x", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => dates[items[0].dataIndex] || "",
+            label: (item) => {
+              const vol = item.raw;
+              if (!Number.isFinite(vol)) return "Volume: N/A";
+              // 格式化大數字
+              if (vol >= 1e9) return `Volume: ${(vol / 1e9).toFixed(2)}B`;
+              if (vol >= 1e6) return `Volume: ${(vol / 1e6).toFixed(2)}M`;
+              if (vol >= 1e3) return `Volume: ${(vol / 1e3).toFixed(2)}K`;
+              return `Volume: ${vol.toFixed(0)}`;
+            }
+          }
+        },
+        zoom: {
+          pan: { enabled: true, mode: "x", modifierKey: "ctrl" },
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: "x" }
+        }
+      },
+      scales: {
+        x: {
+          min: chartStart,
+          max: chartEnd,
+          ticks: { color: "#bdbdbd", callback: (val) => formatDateTick(val) },
+          grid: { color: "rgba(255,255,255,0.06)" }
+        },
+        y: {
+          ticks: {
+            color: "#bdbdbd",
+            callback: (val) => {
+              if (val >= 1e9) return (val / 1e9).toFixed(1) + "B";
+              if (val >= 1e6) return (val / 1e6).toFixed(1) + "M";
+              if (val >= 1e3) return (val / 1e3).toFixed(1) + "K";
+              return val;
+            }
+          },
+          grid: { color: "rgba(255,255,255,0.12)" }
+        }
+      }
+    }
+  });
 }
 
 // ============= MACD 圖表 =============
@@ -1006,7 +1219,11 @@ function updateMACDChart() {
       interaction: { mode: "nearest", axis: "x", intersect: false },
       plugins: {
         legend: { position: "top", labels: { color: "#eeeeee", usePointStyle: true, pointStyle: "line" } },
-        tooltip: { callbacks: { title: (items) => dates[items[0].dataIndex] || "" } },
+        tooltip: { callbacks: { title: (items) => {
+          const item = items[0];
+          const idx = item.raw && typeof item.raw.x === 'number' ? item.raw.x : item.dataIndex;
+          return dates[idx] || "";
+        } } },
         zoom: {
           pan:  { enabled: true, mode: "x", modifierKey: "ctrl" },
           zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: "x" }
@@ -1081,7 +1298,11 @@ function updateRSIChart() {
       interaction: { mode: "nearest", axis: "x", intersect: false },
       plugins: {
         legend: { position: "top", labels: { color: "#eeeeee", usePointStyle: true, pointStyle: "line" } },
-        tooltip: { callbacks: { title: (items) => dates[items[0].dataIndex] || "" } },
+        tooltip: { callbacks: { title: (items) => {
+          const item = items[0];
+          const idx = item.raw && typeof item.raw.x === 'number' ? item.raw.x : item.dataIndex;
+          return dates[idx] || "";
+        } } },
         annotation: {
           drawTime: "beforeDatasetsDraw",
           annotations: {
@@ -1283,6 +1504,7 @@ function updateCharts() {
   // 先照你原本流程更新資料/線條/annotation
   if (typeof updateKDChart === "function") updateKDChart();
   if (typeof updateMAChart === "function") updateMAChart();
+  if (typeof updateVolumeChart === "function") updateVolumeChart();
   if (typeof updateMACDChart === "function") updateMACDChart();
   if (typeof updateRSIChart === "function") updateRSIChart();
 
@@ -1303,6 +1525,7 @@ function updateCharts() {
 
   applyRange(kdChart);
   applyRange(maChart);
+  applyRange(volumeChart);
   applyRange(macdChart);
   applyRange(rsiChart);
 }
