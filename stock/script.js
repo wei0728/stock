@@ -2,6 +2,7 @@
 let stockNames = [];      // ["AAPL","MSFT",...]
 let stockSeries = {};     // { "AAPL": [prices...], ... }
 let volumeSeriesAll = {}; // { "AAPL": [volumes...], ... }
+let stockDates = {};      // { "AAPL": [dates...], ... }
 let selectedStock = null; // 目前選的股票名稱
 let priceSeries = [];     // 當前選股的價位序列 (Close)
 let volumeSeries = [];    // 當前選股的成交量序列 (Volume)
@@ -106,6 +107,7 @@ async function loadStockData(stockName) {
 
     stockSeries[stockName] = prices;
     volumeSeriesAll[stockName] = volumes;
+    stockDates[stockName] = localDates;
 
     // 如果是第一個載入的或目前選的股票，更新全域資料
     if (selectedStock === stockName || selectedStock === null) {
@@ -230,6 +232,7 @@ function parseMultiStockCSV(text) {
 
   stockSeries = {};
   volumeSeriesAll = {};
+  stockDates = {};
   stockNames.forEach(name => {
     stockSeries[name] = [];
     volumeSeriesAll[name] = []; // 舊格式沒有 volume
@@ -258,6 +261,10 @@ function parseMultiStockCSV(text) {
     volumeSeries = volumeSeriesAll[selectedStock] || [];
     TOTAL_DAYS = priceSeries.length;
   }
+
+  stockNames.forEach(name => {
+    stockDates[name] = dates;
+  });
 }
 
 
@@ -898,7 +905,7 @@ function getMAArray(type, period_) {
 
 const MA_TYPE_COLORS = {
   MA:  { fast: "#64B5F6", slow: "#1976D2" },
-  WMA: { fast: "#BA68C8", slow: "#8E24AA" },
+  WMA: { fast: "#BA68C8", slow: "#1fd647" },
   EMA: { fast: "#E57373", slow: "#C62828" }
 };
 
@@ -1900,6 +1907,225 @@ function maxBuySharesWithFee(cash, price, feeRate, feeMin, feeMax) {
   return lo;
 }
 
+function extractYearFromDateString(dateStr) {
+  if (!dateStr) return NaN;
+  const d = new Date(dateStr);
+  if (!isNaN(d.getTime())) return d.getFullYear();
+  const m = String(dateStr).match(/^(\d{4})/);
+  return m ? parseInt(m[1], 10) : NaN;
+}
+
+function getYearRangeIndexes(dateArr, year) {
+  if (!Array.isArray(dateArr) || !dateArr.length || !Number.isFinite(year)) return null;
+  let from = -1;
+  let to = -1;
+  for (let i = 0; i < dateArr.length; i++) {
+    const y = extractYearFromDateString(dateArr[i]);
+    if (y === year) {
+      if (from === -1) from = i;
+      to = i;
+    }
+  }
+  if (from === -1 || to === -1) return null;
+  return { from, to };
+}
+
+function buildComboLabel(requiredMA, needKD) {
+  const parts = [];
+  if (requiredMA?.length) parts.push(`MA(${requiredMA.join("+")})`);
+  if (needKD) parts.push("KD");
+  return parts.length ? parts.join(" + ") : "No conditions";
+}
+
+function comboRank65536(simInfo) {
+  const payload = {
+    requiredMA: Array.isArray(simInfo?.requiredMA) ? [...simInfo.requiredMA].sort() : [],
+    needKD: !!simInfo?.needKD,
+    fastPeriod: Number.isFinite(simInfo?.fastPeriod) ? simInfo.fastPeriod : null,
+    slowPeriod: Number.isFinite(simInfo?.slowPeriod) ? simInfo.slowPeriod : null,
+    fillMode: simInfo?.fillMode || "",
+    feeRate: Number.isFinite(simInfo?.feeRate) ? simInfo.feeRate : null,
+    taxRate: Number.isFinite(simInfo?.taxRate) ? simInfo.taxRate : null
+  };
+
+  const str = JSON.stringify(payload);
+  let hash = 0x811c9dc5; // FNV-1a 32-bit
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = (hash >>> 0) * 0x01000193;
+  }
+  const rank = (hash >>> 0) & 0xFFFF; // 0..65535
+  return rank + 1; // 1..65536
+}
+
+function simulateStrategyOnCurrentSeries(params) {
+  const {
+    from,
+    to,
+    fund,
+    fillMode,
+    feeRate,
+    feeMin,
+    feeMax,
+    taxRate,
+    taxMin,
+    taxMax,
+    requiredMA,
+    needKD,
+    fastPeriod,
+    slowPeriod
+  } = params;
+
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to < 0 || from > to) {
+    return { ok: false, reason: "invalid-range" };
+  }
+  if (!priceSeries?.length || !dates?.length) return { ok: false, reason: "no-data" };
+
+  // --- Compute short/long MA arrays for EPS-based cross detection ---
+  const shortMA = requiredMA?.length ? getMAArray(requiredMA[0], fastPeriod) : null;
+  const longMA  = requiredMA?.length ? getMAArray(requiredMA[0], slowPeriod) : null;
+
+  // KD cross sets (if enabled, used as additional filter)
+  let kdBuySet = null, kdSellSet = null;
+  if (needKD) {
+    kdBuySet  = idxSetFromCrossList(kdGolden);
+    kdSellSet = idxSetFromCrossList(kdDeath);
+  }
+
+  if (!shortMA && !needKD) {
+    return { ok: false, reason: "no-conditions" };
+  }
+
+  let cash = fund;
+  let shares = 0;
+  let trades = 0;
+  let totalFee = 0;
+  let totalTax = 0;
+  const rows = [];
+  let buyPrice = 0;
+
+  const EPS = 1e-9;
+  let touchprev = -1; // 記錄接近0時的前一個差值，-1 表示無
+
+  for (let i = from; i <= to; i++) {
+    const currentPrice = priceSeries[i];
+    if (!Number.isFinite(currentPrice)) continue;
+
+    const isFirstDay = (i === from);
+
+    // --- EPS-based MA cross detection ---
+    let goldenCross = false;
+    let deathCross = false;
+
+    if (shortMA && longMA && i > from) {
+      const prevShort = shortMA[i - 1];
+      const prevLong  = longMA[i - 1];
+      const curShort  = shortMA[i];
+      const curLong   = longMA[i];
+
+      if (Number.isFinite(prevShort) && Number.isFinite(prevLong) &&
+          Number.isFinite(curShort)  && Number.isFinite(curLong)) {
+
+        const prevDiff    = prevShort - prevLong;
+        const currentDiff = curShort  - curLong;
+
+        if (Math.abs(currentDiff) < EPS) {
+          // 當天沒有明確交叉，記錄接近0的差值
+          touchprev = prevDiff;
+          continue;
+        }
+
+        if (touchprev === -1) {
+          if (prevDiff < -EPS && currentDiff > EPS) goldenCross = true;  // 黃金交叉
+          if (prevDiff >  EPS && currentDiff < -EPS) deathCross = true;  // 死亡交叉
+        } else {
+          if ((prevDiff < -EPS && currentDiff > EPS) || (touchprev < -EPS && currentDiff > EPS)) {
+            goldenCross = true; // 黃金交叉
+          }
+          if ((prevDiff > EPS && currentDiff < -EPS) || (touchprev > EPS && currentDiff < -EPS)) {
+            deathCross = true;  // 死亡交叉
+          }
+          touchprev = -1; // 重置
+        }
+      }
+    }
+
+    // KD cross filtering (if enabled, require KD agreement)
+    if (needKD) {
+      if (goldenCross && (!kdBuySet || !kdBuySet.has(i)))  goldenCross = false;
+      if (deathCross  && (!kdSellSet || !kdSellSet.has(i))) deathCross  = false;
+    }
+
+    // 死亡交叉：賣出
+    if (shares > 0 && deathCross) {
+      const sellAmount = shares * currentPrice;
+      const fee = calcFee(sellAmount, feeRate, feeMin, feeMax);
+      const tax = calcTax(sellAmount, taxRate, taxMin, taxMax);
+      const netAmount = sellAmount - fee - tax;
+      cash += netAmount;
+      totalFee += fee;
+      totalTax += tax;
+
+      const profit = netAmount - (buyPrice * shares + calcFee(buyPrice * shares, feeRate, feeMin, feeMax));
+      rows.push({ side: "SELL", date: dates[i], price: currentPrice, shares, cash, fee, tax, profit });
+      shares = 0;
+      trades++;
+      continue;
+    }
+
+    // 黃金交叉：買入（第一天不買）
+    if (!isFirstDay && goldenCross) {
+      const maxShares = maxBuySharesWithFee(cash, currentPrice, feeRate, feeMin, feeMax);
+      if (maxShares > 0) {
+        const buyAmount = maxShares * currentPrice;
+        const fee = calcFee(buyAmount, feeRate, feeMin, feeMax);
+        const totalCost = buyAmount + fee;
+
+        shares = maxShares;
+        cash -= totalCost;
+        buyPrice = currentPrice;
+        totalFee += fee;
+
+        rows.push({ side: "BUY", date: dates[i], price: currentPrice, shares, cash, fee, tax: 0 });
+        trades++;
+      }
+      continue;
+    }
+  }
+
+  if (shares > 0) {
+    const fi = to;
+    const sellPx = priceSeries[fi];
+    if (Number.isFinite(sellPx)) {
+      const amount = shares * sellPx;
+      const fee = calcFee(amount, feeRate, feeMin, feeMax);
+      const tax = calcTax(amount, taxRate, taxMin, taxMax);
+      cash += (amount - fee - tax);
+      totalFee += fee;
+      totalTax += tax;
+      rows.push({ side: "LAST_SELL", date: dates[fi], price: sellPx, shares, cash, fee, tax });
+      shares = 0;
+      trades++;
+    }
+  }
+
+  const lastPx = priceSeries[to];
+  const nav = cash + (shares > 0 && Number.isFinite(lastPx) ? shares * lastPx : 0);
+
+  let bh = NaN;
+  const p0 = priceSeries[from];
+  const p1 = priceSeries[to];
+  if (Number.isFinite(p0) && Number.isFinite(p1) && p0 > 0) {
+    const bhShares = Math.floor(fund / p0);
+    const bhCash = fund - bhShares * p0;
+    bh = bhCash + bhShares * p1;
+  }
+
+  const roi = (nav - fund) / fund * 100;
+
+  return { ok: true, nav, roi, trades, bh, rows, totalFee, totalTax };
+}
+
 // ✅ Your current function整理成可直接跑版本（保持你 UI ID）
 function runSimulator() {
   const kNav = document.getElementById("simKpiNav");
@@ -1921,13 +2147,15 @@ function runSimulator() {
     if (kRoi) kRoi.textContent = "—";
     if (kTrd) kTrd.textContent = "0";
     if (kBH)  kBH.textContent  = "—";
-    return;
+    return null;
   }
 
   computeAll();
 
-  const startIdx = toIndexOrDefault(document.getElementById("simStartDate")?.value, 0);
-  const endIdx   = toIndexOrDefault(document.getElementById("simEndDate")?.value, dates.length - 1);
+  const startDateStr = document.getElementById("simStartDate")?.value || "";
+  const endDateStr   = document.getElementById("simEndDate")?.value || "";
+  const startIdx = toIndexOrDefault(startDateStr, 0);
+  const endIdx   = toIndexOrDefault(endDateStr, dates.length - 1);
 
   const from = Math.max(0, Math.min(startIdx, endIdx));
   const to   = Math.min(dates.length - 1, Math.max(startIdx, endIdx));
@@ -1956,139 +2184,34 @@ function runSimulator() {
   //if (!Number.isFinite(X) || X < 2) X = 5;
   //if (!Number.isFinite(Y) || Y <= X) Y = X + 1;
 
-  const buySets = [];
-  const sellSets = [];
+  const simResult = simulateStrategyOnCurrentSeries({
+    from,
+    to,
+    fund,
+    fillMode,
+    feeRate,
+    feeMin,
+    feeMax,
+    taxRate,
+    taxMin,
+    taxMax,
+    requiredMA,
+    needKD,
+    fastPeriod: X,
+    slowPeriod: Y
+  });
 
-  if (requiredMA.length) {
-    const ma = computeMAConsensusCross(requiredMA, X, Y);
-    buySets.push(ma.golden);
-    sellSets.push(ma.death);
-  }
-  if (needKD) {
-    buySets.push(idxSetFromCrossList(kdGolden));
-    sellSets.push(idxSetFromCrossList(kdDeath));
-  }
-
-  if (!buySets.length || !sellSets.length) {
+  if (!simResult.ok) {
     if (meta) meta.textContent = "No conditions selected → no trades.";
     if (logEl) logEl.textContent = "";
     if (kNav) kNav.textContent = fund.toFixed(2);
     if (kRoi) kRoi.textContent = "0.00%";
     if (kTrd) kTrd.textContent = "0";
     if (kBH)  kBH.textContent  = "—";
-    return;
+    return null;
   }
 
-  const buyIdxSet  = intersectSets(buySets);
-  const sellIdxSet = intersectSets(sellSets);
-  if (buyIdxSet && buyIdxSet.delete) buyIdxSet.delete(from);
-  if (sellIdxSet && sellIdxSet.delete) sellIdxSet.delete(from);
-  let cash = fund;
-  let shares = 0;
-  let trades = 0;
-  let totalFee = 0;
-  let totalTax = 0;
-
-  // logs as structured rows for table rendering
-  const rows = []; // {side,date,price,shares,cash}
-
-  const getFillIndex = (i) => {
-    if (fillMode === "nextClose") return (i + 1 <= to ? i + 1 : -1);
-    return i;
-  };
-
-  for (let i = from; i <= to; i++) {
-    const px = priceSeries[i];
-    if (!Number.isFinite(px)) continue;
-
-    // SELL first
-    if (shares > 0 && sellIdxSet.has(i)) {
-      const fi = getFillIndex(i);
-      if (fi !== -1 && Number.isFinite(priceSeries[fi])) {
-        const sellPx = priceSeries[fi];
-        const amount = shares * sellPx;
-        const fee = calcFee(amount, feeRate, feeMin, feeMax);
-        const tax = calcTax(amount, taxRate, taxMin, taxMax); // typically sell-only
-        cash += (amount - fee - tax);
-        totalFee += fee;
-        totalTax += tax;
-        rows.push({ side: "SELL", date: dates[fi], price: sellPx, shares, cash, fee, tax });
-        shares = 0;
-        trades++;
-      }
-      continue;
-    }
-
-    // BUY
-    if (shares === 0 && buyIdxSet.has(i)) {
-      const fi = getFillIndex(i);
-      if (fi !== -1 && Number.isFinite(priceSeries[fi])) {
-        const buyPx = priceSeries[fi];
-
-        const canBuy = maxBuySharesWithFee(cash, buyPx, feeRate, feeMin, feeMax);
-        if (canBuy > 0) {
-          const amount = canBuy * buyPx;
-          const fee = calcFee(amount, feeRate, feeMin, feeMax);
-          const cost = amount + fee;
-
-          shares = canBuy;
-          cash -= cost;
-
-          totalFee += fee;
-          rows.push({ side: "BUY", date: dates[fi], price: buyPx, shares, cash, fee, tax: 0 });
-          trades++;
-        }
-      }
-    }
-  }
-  // FORCE CLOSE at end of range: if still holding shares, sell at the last bar close (index `to`)
-// This keeps NAV consistent with "must be flat at the end" backtests and makes results comparable.
-  if (shares > 0) {
-    const fi = to; // force close uses the last available close; no nextClose beyond `to`
-    const sellPx = priceSeries[fi];
-    if (Number.isFinite(sellPx)) {
-      const amount = shares * sellPx;
-
-      // Optional: if fee/tax helpers exist in your page, apply them; otherwise fee/tax = 0
-      let fee = 0;
-      let tax = 0;
-      if (typeof getSimFeeTaxParams === "function" &&
-          typeof calcFee === "function" &&
-          typeof calcTax === "function") {
-        const p = getSimFeeTaxParams();
-        const feeRate = Number.isFinite(p?.feeRate) ? p.feeRate : 0;
-        const feeMin  = Number.isFinite(p?.feeMin)  ? p.feeMin  : 0;
-        const feeMax  = Number.isFinite(p?.feeMax)  ? p.feeMax  : 1e100;
-
-        const taxRate = Number.isFinite(p?.taxRate) ? p.taxRate : 0;
-        const taxMin  = Number.isFinite(p?.taxMin)  ? p.taxMin  : 0;
-        const taxMax  = Number.isFinite(p?.taxMax)  ? p.taxMax  : 1e100;
-
-        fee = calcFee(amount, feeRate, feeMin, feeMax);
-        tax = calcTax(amount, taxRate, taxMin, taxMax);
-      }
-
-      cash += (amount - fee - tax);
-      rows.push({ side: "LAST_SELL", date: dates[fi], price: sellPx, shares, cash, fee, tax });
-      shares = 0;
-      trades++;
-    }
-  }
-
-  const lastPx = priceSeries[to];
-  const nav = cash + (shares > 0 && Number.isFinite(lastPx) ? shares * lastPx : 0);
-
-  // Buy & Hold benchmark
-  let bh = NaN;
-  const p0 = priceSeries[from];
-  const p1 = priceSeries[to];
-  if (Number.isFinite(p0) && Number.isFinite(p1) && p0 > 0) {
-    const bhShares = Math.floor(fund / p0);
-    const bhCash = fund - bhShares * p0;
-    bh = bhCash + bhShares * p1;
-  }
-
-  const roi = (nav - fund) / fund * 100;
+  const { nav, roi, trades, bh, rows, totalFee, totalTax } = simResult;
 
   if (kNav) kNav.textContent = nav.toFixed(2);
   if (kRoi) {
@@ -2154,13 +2277,137 @@ function runSimulator() {
       logEl.appendChild(table);
     }
   }
+
+  return {
+    selectedStock,
+    from,
+    to,
+    startDateStr,
+    endDateStr,
+    fund,
+    fillMode,
+    feeRate,
+    feeMin,
+    feeMax,
+    taxRate,
+    taxMin,
+    taxMax,
+    requiredMA,
+    needKD,
+    fastPeriod: X,
+    slowPeriod: Y,
+    roi
+  };
+}
+
+async function logComboYearRanking(simInfo) {
+  if (!simInfo) return;
+
+  const startYear = extractYearFromDateString(simInfo.startDateStr);
+  const endYear = extractYearFromDateString(simInfo.endDateStr);
+
+  let targetYear = Number.isFinite(startYear) ? startYear : (Number.isFinite(endYear) ? endYear : extractYearFromDateString(dates?.[simInfo.from]));
+  if (Number.isFinite(startYear) && Number.isFinite(endYear) && startYear === endYear) {
+    targetYear = startYear;
+  }
+
+  if (!Number.isFinite(targetYear)) {
+    console.warn("[SIM-RANK] Year not found for ranking.");
+    return;
+  }
+
+  const comboLabel = buildComboLabel(simInfo.requiredMA, simInfo.needKD);
+
+  const saved = {
+    selectedStock,
+    priceSeries,
+    volumeSeries,
+    dates,
+    TOTAL_DAYS
+  };
+
+  const results = [];
+
+  for (const name of stockNames) {
+    if (!stockSeries[name] || !stockSeries[name].length) {
+      await loadStockData(name);
+    }
+
+    const dArr = stockDates[name] || [];
+    const yrRange = getYearRangeIndexes(dArr, targetYear);
+    if (!yrRange) continue;
+
+    selectedStock = name;
+    priceSeries = stockSeries[name] || [];
+    volumeSeries = volumeSeriesAll[name] || [];
+    dates = dArr;
+    TOTAL_DAYS = priceSeries.length;
+
+    computeAll();
+
+    const res = simulateStrategyOnCurrentSeries({
+      from: yrRange.from,
+      to: yrRange.to,
+      fund: simInfo.fund,
+      fillMode: simInfo.fillMode,
+      feeRate: simInfo.feeRate,
+      feeMin: simInfo.feeMin,
+      feeMax: simInfo.feeMax,
+      taxRate: simInfo.taxRate,
+      taxMin: simInfo.taxMin,
+      taxMax: simInfo.taxMax,
+      requiredMA: simInfo.requiredMA,
+      needKD: simInfo.needKD,
+      fastPeriod: simInfo.fastPeriod,
+      slowPeriod: simInfo.slowPeriod
+    });
+
+    if (res.ok) results.push({ stock: name, roi: res.roi, nav: res.nav });
+  }
+
+  selectedStock = saved.selectedStock;
+  priceSeries = saved.priceSeries;
+  volumeSeries = saved.volumeSeries;
+  dates = saved.dates;
+  TOTAL_DAYS = saved.TOTAL_DAYS;
+  computeAll();
+
+  if (!results.length) {
+    console.warn("[SIM-RANK] No ranking results for the selected year.");
+    return;
+  }
+
+  results.sort((a, b) => b.roi - a.roi);
+
+  const idx = results.findIndex(r => r.stock === simInfo.selectedStock);
+  const rank = idx >= 0 ? idx + 1 : null;
+  const selectedRow = idx >= 0 ? results[idx] : null;
+  const comboRank = comboRank65536(simInfo);
+
+  if (rank) {
+    console.log(`[SIM-RANK] ${targetYear} ${comboLabel} | ${simInfo.selectedStock} #${rank}/${results.length} ROI ${selectedRow.roi.toFixed(2)}% | ComboRank ${comboRank}/65536`);
+  } else {
+    console.log(`[SIM-RANK] ${targetYear} ${comboLabel} | ${simInfo.selectedStock} not found in ranking (${results.length} stocks). | ComboRank ${comboRank}/65536`);
+  }
+
+  const topList = results.slice(0, 10).map((r, i) => ({
+    Rank: i + 1,
+    Stock: r.stock,
+    ROI: `${r.roi.toFixed(2)}%`
+  }));
+  console.table(topList);
 }
 
 // 綁定按鈕
 const simRunBtn = document.getElementById("simRun");
 if (simRunBtn) {
   simRunBtn.addEventListener("click", () => {
-    runSimulator();
+    const simInfo = runSimulator();
+    if (simInfo) {
+      logComboYearRanking(simInfo).catch(err => {
+        console.warn("[SIM-RANK] failed:", err);
+      });
+    }
   });
 }
 
