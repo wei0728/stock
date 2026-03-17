@@ -12,12 +12,12 @@ let volumeSeries = [];
 const STOCK_LIST = [
   "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
   "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
-  "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT"
+  "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT", "DIA", "SPY"
 ];
 
 // ---------- CSV load (新格式: date,close,volume) ----------
 
-// 解析單一股票 CSV (date,close,volume)
+// 解析單一股票 CSV (date,open,high,low,close,volume)
 function parseSingleStockCSV(text, stockName) {
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) return { dates: [], prices: [], volumes: [] };
@@ -29,11 +29,11 @@ function parseSingleStockCSV(text, stockName) {
   // 跳過 header
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(",");
-    if (cols.length < 3) continue;
+    if (cols.length < 6) continue;
 
     localDates.push(cols[0].trim());
-    const price = parseFloat(cols[1]);
-    const volume = parseFloat(cols[2]);
+    const price = parseFloat(cols[4]);   // close 在第 5 欄 (index 4)
+    const volume = parseFloat(cols[5]);  // volume 在第 6 欄 (index 5)
     prices.push(!isNaN(price) ? price : NaN);
     volumes.push(!isNaN(volume) ? volume : NaN);
   }

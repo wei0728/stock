@@ -1,10 +1,16 @@
 // 全部指標（KD / MA / RSI）都使用 csv 資料夾的股票資料
 let stockNames = [];      // ["AAPL","MSFT",...]
-let stockSeries = {};     // { "AAPL": [prices...], ... }
+let stockSeries = {};     // { "AAPL": [close prices...], ... }
+let openSeriesAll = {};   // { "AAPL": [open prices...], ... }
+let highSeriesAll = {};   // { "AAPL": [high prices...], ... }
+let lowSeriesAll = {};    // { "AAPL": [low prices...], ... }
 let volumeSeriesAll = {}; // { "AAPL": [volumes...], ... }
 let stockDates = {};      // { "AAPL": [dates...], ... }
 let selectedStock = null; // 目前選的股票名稱
 let priceSeries = [];     // 當前選股的價位序列 (Close)
+let openSeries = [];      // 當前選股的開盤價序列 (Open)
+let highSeries = [];      // 當前選股的最高價序列 (High)
+let lowSeries = [];       // 當前選股的最低價序列 (Low)
 let volumeSeries = [];    // 當前選股的成交量序列 (Volume)
 let TOTAL_DAYS = 0;       // 資料長度
 let dates = [];           // 日期字串（與 priceSeries 同長度）
@@ -13,7 +19,7 @@ let dates = [];           // 日期字串（與 priceSeries 同長度）
 const STOCK_LIST = [
   "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
   "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
-  "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT"
+  "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT", "DIA", "SPY"
 ];
 
 // KD / MA 指標資料
@@ -73,28 +79,37 @@ function clampKD(x) {
 
 // ============= 自動讀取 csv 資料夾的股票資料 =============
 
-// 解析單一股票 CSV (date,close,volume)
+// 解析單一股票 CSV (date,open,high,low,close,volume)
 function parseSingleStockCSV(text, stockName) {
   const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) return { dates: [], prices: [], volumes: [] };
+  if (lines.length < 2) return { dates: [], opens: [], highs: [], lows: [], prices: [], volumes: [] };
 
   const localDates = [];
+  const opens = [];
+  const highs = [];
+  const lows = [];
   const prices = [];
   const volumes = [];
 
   // 跳過 header
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(",");
-    if (cols.length < 3) continue;
+    if (cols.length < 6) continue;
 
     localDates.push(cols[0].trim());
-    const price = parseFloat(cols[1]);
-    const volume = parseFloat(cols[2]);
+    const openPrice = parseFloat(cols[1]);
+    const highPrice = parseFloat(cols[2]);
+    const lowPrice = parseFloat(cols[3]);
+    const price = parseFloat(cols[4]);
+    const volume = parseFloat(cols[5]);
+    opens.push(!isNaN(openPrice) ? openPrice : NaN);
+    highs.push(!isNaN(highPrice) ? highPrice : NaN);
+    lows.push(!isNaN(lowPrice) ? lowPrice : NaN);
     prices.push(!isNaN(price) ? price : NaN);
     volumes.push(!isNaN(volume) ? volume : NaN);
   }
 
-  return { dates: localDates, prices, volumes };
+  return { dates: localDates, opens, highs, lows, prices, volumes };
 }
 
 // 載入單一股票的資料
@@ -103,9 +118,12 @@ async function loadStockData(stockName) {
     const resp = await fetch(`../csv/${stockName}_history.csv`);
     if (!resp.ok) throw new Error(`${stockName}_history.csv not found`);
     const text = await resp.text();
-    const { dates: localDates, prices, volumes } = parseSingleStockCSV(text, stockName);
+    const { dates: localDates, opens, highs, lows, prices, volumes } = parseSingleStockCSV(text, stockName);
 
     stockSeries[stockName] = prices;
+    openSeriesAll[stockName] = opens;
+    highSeriesAll[stockName] = highs;
+    lowSeriesAll[stockName] = lows;
     volumeSeriesAll[stockName] = volumes;
     stockDates[stockName] = localDates;
 
@@ -114,6 +132,9 @@ async function loadStockData(stockName) {
       selectedStock = stockName;
       dates = localDates;
       priceSeries = prices;
+      openSeries = opens;
+      highSeries = highs;
+      lowSeries = lows;
       volumeSeries = volumes;
       TOTAL_DAYS = prices.length;
     }
@@ -164,9 +185,12 @@ if (csvFileEl) {
       if (firstLine.includes("close") && firstLine.includes("volume")) {
         // 新格式：單一股票 CSV
         const stockName = file.name.replace(/_history\.csv$/i, "").replace(/\.csv$/i, "").toUpperCase();
-        const { dates: localDates, prices, volumes } = parseSingleStockCSV(text, stockName);
+        const { dates: localDates, opens, highs, lows, prices, volumes } = parseSingleStockCSV(text, stockName);
 
         stockSeries[stockName] = prices;
+        openSeriesAll[stockName] = opens;
+        highSeriesAll[stockName] = highs;
+        lowSeriesAll[stockName] = lows;
         volumeSeriesAll[stockName] = volumes;
 
         if (!stockNames.includes(stockName)) {
@@ -176,6 +200,9 @@ if (csvFileEl) {
         selectedStock = stockName;
         dates = localDates;
         priceSeries = prices;
+        openSeries = opens;
+        highSeries = highs;
+        lowSeries = lows;
         volumeSeries = volumes;
         TOTAL_DAYS = prices.length;
 
@@ -209,6 +236,9 @@ if (stockSelectEl) {
     } else {
       // 使用已載入的資料
       priceSeries = stockSeries[name] || [];
+      openSeries = openSeriesAll[name] || [];
+      highSeries = highSeriesAll[name] || [];
+      lowSeries = lowSeriesAll[name] || [];
       volumeSeries = volumeSeriesAll[name] || [];
       // 需要重新載入日期（因為每個股票可能日期不同）
       await loadStockData(name);
@@ -258,6 +288,9 @@ function parseMultiStockCSV(text) {
   if (stockNames.length > 0) {
     selectedStock = stockNames[0];
     priceSeries = stockSeries[selectedStock];
+    openSeries = openSeriesAll[selectedStock] || [];
+    highSeries = highSeriesAll[selectedStock] || [];
+    lowSeries = lowSeriesAll[selectedStock] || [];
     volumeSeries = volumeSeriesAll[selectedStock] || [];
     TOTAL_DAYS = priceSeries.length;
   }
@@ -931,10 +964,37 @@ function updateMAChart() {
   if (slowInput) slowInput.value = Y;
 
   const datasets = [];
+  const hasVolume = Array.isArray(volumeSeries) && volumeSeries.length === TOTAL_DAYS;
+  const volumeBarColors = hasVolume
+    ? volumeSeries.map((_, i) => {
+        if (i === 0) return "rgba(158, 158, 158, 0.28)";
+        const prevPrice = priceSeries[i - 1];
+        const currPrice = priceSeries[i];
+        if (!Number.isFinite(prevPrice) || !Number.isFinite(currPrice)) return "rgba(158, 158, 158, 0.28)";
+        if (currPrice > prevPrice) return "rgba(76, 175, 80, 0.28)";
+        if (currPrice < prevPrice) return "rgba(244, 67, 54, 0.28)";
+        return "rgba(158, 158, 158, 0.28)";
+      })
+    : [];
+
+  if (hasVolume) {
+    datasets.push({
+      label: "Volume",
+      type: "bar",
+      data: volumeSeries,
+      yAxisID: "yVolume",
+      backgroundColor: volumeBarColors,
+      borderWidth: 0,
+      barPercentage: 0.9,
+      categoryPercentage: 0.98,
+      order: 0
+    });
+  }
 
   datasets.push({
     label: "PRICE",
     data: priceSeries,
+    yAxisID: "y",
     order: 1000,
     ...PRICE_LINE_STYLE
   });
@@ -957,6 +1017,7 @@ function updateMAChart() {
     datasets.push({
       label: `${type}(${X})`,
       data: fastArr,
+      yAxisID: "y",
       borderWidth: 2,
       fill: false,
       tension: 0,
@@ -966,6 +1027,7 @@ function updateMAChart() {
     datasets.push({
       label: `${type}(${Y})`,
       data: slowArr,
+      yAxisID: "y",
       borderWidth: 2,
       fill: false,
       tension: 0,
@@ -977,6 +1039,7 @@ function updateMAChart() {
       label: `${type} Golden`,
       type: "scatter",
       data: crosses.golden.map(p => ({ x: p.index, y: p.a })),
+      yAxisID: "y",
       pointRadius: 6,
       pointStyle: "triangle",
       backgroundColor: "#FFD700",
@@ -988,6 +1051,7 @@ function updateMAChart() {
       label: `${type} Death`,
       type: "scatter",
       data: crosses.death.map(p => ({ x: p.index, y: p.a })),
+      yAxisID: "y",
       pointRadius: 6,
       pointStyle: "rectRot",
       backgroundColor: "#FF1744",
@@ -1038,6 +1102,8 @@ function updateMAChart() {
       maChart.options.plugins.annotation.annotations = shadedBoxes;
     }
 
+    maChart.options.scales.yVolume.display = hasVolume;
+
     maChart.update("none");
   } else {
     const ctx = canvas.getContext("2d");
@@ -1068,8 +1134,23 @@ function updateMAChart() {
             grid: { color: "rgba(255,255,255,0.06)" }
           },
           y: {
+            position: "left",
             ticks: { color: "#bdbdbd" },
             grid: { color: "rgba(255,255,255,0.12)" }
+          },
+          yVolume: {
+            position: "right",
+            display: hasVolume,
+            grid: { drawOnChartArea: false },
+            ticks: {
+              color: "rgba(255,255,255,0.65)",
+              callback: (val) => {
+                if (val >= 1e9) return (val / 1e9).toFixed(1) + "B";
+                if (val >= 1e6) return (val / 1e6).toFixed(1) + "M";
+                if (val >= 1e3) return (val / 1e3).toFixed(1) + "K";
+                return val;
+              }
+            }
           }
         }
       }
@@ -2321,6 +2402,9 @@ async function logComboYearRanking(simInfo) {
   const saved = {
     selectedStock,
     priceSeries,
+    openSeries,
+    highSeries,
+    lowSeries,
     volumeSeries,
     dates,
     TOTAL_DAYS
@@ -2339,6 +2423,9 @@ async function logComboYearRanking(simInfo) {
 
     selectedStock = name;
     priceSeries = stockSeries[name] || [];
+    openSeries = openSeriesAll[name] || [];
+    highSeries = highSeriesAll[name] || [];
+    lowSeries = lowSeriesAll[name] || [];
     volumeSeries = volumeSeriesAll[name] || [];
     dates = dArr;
     TOTAL_DAYS = priceSeries.length;
@@ -2367,6 +2454,9 @@ async function logComboYearRanking(simInfo) {
 
   selectedStock = saved.selectedStock;
   priceSeries = saved.priceSeries;
+  openSeries = saved.openSeries;
+  highSeries = saved.highSeries;
+  lowSeries = saved.lowSeries;
   volumeSeries = saved.volumeSeries;
   dates = saved.dates;
   TOTAL_DAYS = saved.TOTAL_DAYS;
