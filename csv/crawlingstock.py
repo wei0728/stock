@@ -53,7 +53,6 @@ def get_stock_history(symbol: str, period: str = "1y", interval: str = "1d", sta
 def generate_trading_calendar(start_date: str, end_date: str):
     """
     Generate a list of trading days (weekdays only, excluding weekends).
-    Includes January 1st and fills missing trading days with previous data.
     
     Args:
         start_date: Start date in 'YYYY-MM-DD' format
@@ -103,21 +102,68 @@ def parse_stock_data(data: dict, trading_calendar: list):
         # Format as YYYY/M/D (no zero padding)
         date_str = f"{dt.year}/{dt.month}/{dt.day}"
         actual_data[date_str] = {
+            "open": quote["open"][i],
+            "high": quote["high"][i],
+            "low": quote["low"][i],
             "close": quote["close"][i],
             "volume": quote["volume"][i]
         }
     
     # Build complete DataFrame with trading calendar
     rows = []
+    prev_open = None
+    prev_high = None
+    prev_low = None
     prev_close = None
     prev_volume = None
     
+    # Initialize prev_* with data before trading_calendar starts (e.g., 2012/12/31 for 2013/1/1)
+    if trading_calendar:
+        parts = trading_calendar[0].split("/")
+        first_calendar_date = datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+        
+        # Find the most recent data before the first calendar date
+        latest_before_start = None
+        latest_before_start_values = None
+        for date_str, values in actual_data.items():
+            parts = date_str.split("/")
+            dt = datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+            if dt < first_calendar_date and values["close"] is not None:
+                if latest_before_start is None or dt > latest_before_start:
+                    latest_before_start = dt
+                    latest_before_start_values = values
+        
+        if latest_before_start_values:
+            prev_open = latest_before_start_values["open"]
+            prev_high = latest_before_start_values["high"]
+            prev_low = latest_before_start_values["low"]
+            prev_close = latest_before_start_values["close"]
+            prev_volume = latest_before_start_values["volume"]
+    
     for date_str in trading_calendar:
         if date_str in actual_data:
+            open_price = actual_data[date_str]["open"]
+            high = actual_data[date_str]["high"]
+            low = actual_data[date_str]["low"]
             close = actual_data[date_str]["close"]
             volume = actual_data[date_str]["volume"]
             
             # Handle None values from API
+            if open_price is not None:
+                prev_open = open_price
+            else:
+                open_price = prev_open
+            
+            if high is not None:
+                prev_high = high
+            else:
+                high = prev_high
+            
+            if low is not None:
+                prev_low = low
+            else:
+                low = prev_low
+            
             if close is not None:
                 prev_close = close
             else:
@@ -129,12 +175,17 @@ def parse_stock_data(data: dict, trading_calendar: list):
                 volume = prev_volume
         else:
             # Holiday or missing data - use previous day's data
-            # If no previous data exists, will be filled by forward fill later
+            open_price = prev_open
+            high = prev_high
+            low = prev_low
             close = prev_close
             volume = prev_volume
         
         rows.append({
             "date": date_str,
+            "open": open_price,
+            "high": high,
+            "low": low,
             "close": close,
             "volume": volume
         })
@@ -143,14 +194,20 @@ def parse_stock_data(data: dict, trading_calendar: list):
     
     # Forward fill any remaining None values (for first day if no previous data)
     # First backward fill to handle start of data, then forward fill for rest
+    df["open"] = df["open"].bfill().ffill()
+    df["high"] = df["high"].bfill().ffill()
+    df["low"] = df["low"].bfill().ffill()
     df["close"] = df["close"].bfill().ffill()
     
     # For volume, convert to float first to use bfill, then to int
     df["volume"] = df["volume"].astype(float)
     df["volume"] = df["volume"].bfill().fillna(0)
     
-    # Round price columns to 3 decimal places
-    df["close"] = df["close"].round(3)
+    # Format price columns to 2 decimal places (with trailing zeros)
+    df["open"] = df["open"].round(2).apply(lambda x: f"{x:.2f}")
+    df["high"] = df["high"].round(2).apply(lambda x: f"{x:.2f}")
+    df["low"] = df["low"].round(2).apply(lambda x: f"{x:.2f}")
+    df["close"] = df["close"].round(2).apply(lambda x: f"{x:.2f}")
     
     # Convert volume to integer
     df["volume"] = df["volume"].astype(int)
@@ -162,13 +219,14 @@ def main():
     symbols = [
         "NVDA", "V", "SHW", "CSCO", "DIS", "TRV", "JPM", "MCD", "AMZN", "MRK",
         "AMGN", "VZ", "MSFT", "AAPL", "AXP", "UNH", "MMM", "IBM", "WMT", "GS",
-        "CVX", "PG", "CAT", "KO", "HON", "HD", "JNJ", "BA", "CRM", "NKE"
+        "CVX", "PG", "CAT", "KO", "HON", "HD", "JNJ", "BA", "CRM", "NKE", "SPY", "DIA"
     ]
-    start_date = "2014-01-01"
+    fetch_start_date = "2012-12-31"  # 從這天開始抓資料，確保 2013/1/1 有前一天的資料可用
+    calendar_start_date = "2013-01-01"  # trading calendar 從這天開始
     end_date = datetime.now().strftime("%Y-%m-%d")
     
     # Generate trading calendar (all weekdays from start to end)
-    trading_calendar = generate_trading_calendar(start_date, end_date)
+    trading_calendar = generate_trading_calendar(calendar_start_date, end_date)
     print(f"Trading calendar: {len(trading_calendar)} days from {trading_calendar[0]} to {trading_calendar[-1]}")
     print()
     
@@ -176,11 +234,11 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     
     for symbol in symbols:
-        print(f"Fetching {symbol} stock data from {start_date} to today...")
+        print(f"Fetching {symbol} stock data from {fetch_start_date} to today...")
         
         try:
             # Fetch JSON data from Yahoo Finance
-            data = get_stock_history(symbol, interval="1d", start_date=start_date)
+            data = get_stock_history(symbol, interval="1d", start_date=fetch_start_date)
             
             # Save raw JSON
             with open(f"{symbol}_raw.json", "w", encoding="utf-8") as f:
