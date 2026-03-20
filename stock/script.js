@@ -59,6 +59,63 @@ let maChart = null;
 let chartStart = 0;
 let chartEnd = 0;
 
+function sanitizePositiveInt(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
+function getVolumeMAPeriod() {
+  const input = document.getElementById("volumeMAPeriod");
+  const period_ = sanitizePositiveInt(input?.value, 20);
+  if (input) input.value = period_;
+  return period_;
+}
+
+function isMAVEnabled() {
+  return !!document.getElementById("showMAV")?.checked;
+}
+
+function formatVolumeValue(value) {
+  if (!Number.isFinite(value)) return "N/A";
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(2)}K`;
+  return value.toFixed(0);
+}
+
+function calcVolumeMAArray(volumes, averagedaycount) {
+  const arr = Array(Array.isArray(volumes) ? volumes.length : 0).fill(NaN);
+  if (!Array.isArray(volumes) || averagedaycount <= 0) return arr;
+
+  for (let dayIndex = averagedaycount; dayIndex < volumes.length; dayIndex++) {
+    let sum = 0.0;
+    let ok = true;
+
+    for (let i = dayIndex - averagedaycount; i <= dayIndex - 1; i++) {
+      const v = volumes[i];
+      if (!Number.isFinite(v)) {
+        ok = false;
+        break;
+      }
+      sum += v;
+    }
+
+    arr[dayIndex] = ok ? sum / averagedaycount : NaN;
+  }
+
+  return arr;
+}
+
+function mavTradeSignal(volumes, dayIndex, averagedaycount) {
+  if (averagedaycount <= 0) return true;
+  if (!Array.isArray(volumes) || dayIndex < 0 || dayIndex >= volumes.length) return false;
+
+  const avgSeries = calcVolumeMAArray(volumes, averagedaycount);
+  return Number.isFinite(volumes[dayIndex]) &&
+         Number.isFinite(avgSeries[dayIndex]) &&
+         volumes[dayIndex] > avgSeries[dayIndex];
+}
+
 
 
 
@@ -965,6 +1022,9 @@ function updateMAChart() {
 
   const datasets = [];
   const hasVolume = Array.isArray(volumeSeries) && volumeSeries.length === TOTAL_DAYS;
+  const mavPeriod = getVolumeMAPeriod();
+  const volumeMA = hasVolume ? calcVolumeMAArray(volumeSeries, mavPeriod) : [];
+  const showMAV = hasVolume && isMAVEnabled();
   const volumeBarColors = hasVolume
     ? volumeSeries.map((_, i) => {
         if (i === 0) return "rgba(158, 158, 158, 0.28)";
@@ -989,6 +1049,21 @@ function updateMAChart() {
       categoryPercentage: 0.98,
       order: 0
     });
+    if (showMAV) {
+      datasets.push({
+        label: `MAV(${mavPeriod})`,
+        type: "line",
+        data: volumeMA,
+        yAxisID: "yVolume",
+        borderColor: "#FFD54F",
+        backgroundColor: "rgba(255, 213, 79, 0.16)",
+        borderWidth: 2,
+        fill: false,
+        tension: 0,
+        pointRadius: 0,
+        order: 1
+      });
+    }
   }
 
   datasets.push({
@@ -1168,6 +1243,9 @@ function updateVolumeChart() {
   const labels = [...Array(TOTAL_DAYS).keys()];
 
   // 根據價格漲跌決定長條顏色
+  const mavPeriod = getVolumeMAPeriod();
+  const volumeMA = calcVolumeMAArray(volumeSeries, mavPeriod);
+  const showMAV = isMAVEnabled();
   const barColors = volumeSeries.map((vol, i) => {
     if (i === 0) return "rgba(158, 158, 158, 0.7)"; // 第一天無法比較
     const prevPrice = priceSeries[i - 1];
@@ -1180,10 +1258,35 @@ function updateVolumeChart() {
     return "rgba(158, 158, 158, 0.7)"; // 平盤灰色
   });
 
+  const datasets = [{
+    label: "Volume",
+    data: volumeSeries,
+    backgroundColor: barColors,
+    borderWidth: 0,
+    barPercentage: 0.8,
+    categoryPercentage: 0.9,
+    order: 0
+  }];
+
+  if (showMAV) {
+    datasets.push({
+      label: `MAV(${mavPeriod})`,
+      type: "line",
+      data: volumeMA,
+      borderColor: "#FFD54F",
+      backgroundColor: "rgba(255, 213, 79, 0.18)",
+      borderWidth: 2,
+      fill: false,
+      tension: 0,
+      pointRadius: 0,
+      order: 1
+    });
+  }
+
   if (volumeChart) {
     volumeChart.data.labels = labels;
-    volumeChart.data.datasets[0].data = volumeSeries;
-    volumeChart.data.datasets[0].backgroundColor = barColors;
+    volumeChart.data.datasets = datasets;
+    volumeChart.options.plugins.legend.display = showMAV;
 
     volumeChart.options.scales.x.min = chartStart;
     volumeChart.options.scales.x.max = chartEnd;
@@ -1197,14 +1300,7 @@ function updateVolumeChart() {
     type: "bar",
     data: {
       labels,
-      datasets: [{
-        label: "Volume",
-        data: volumeSeries,
-        backgroundColor: barColors,
-        borderWidth: 0,
-        barPercentage: 0.8,
-        categoryPercentage: 0.9
-      }]
+      datasets
     },
     options: {
       responsive: true,
@@ -1212,7 +1308,7 @@ function updateVolumeChart() {
       animation: false,
       interaction: { mode: "nearest", axis: "x", intersect: false },
       plugins: {
-        legend: { display: false },
+        legend: { display: showMAV, labels: { color: "#eeeeee", usePointStyle: true } },
         tooltip: {
           callbacks: {
             title: (items) => dates[items[0].dataIndex] || "",
@@ -1658,6 +1754,26 @@ if (maSlowInput) {
   });
 }
 
+const volumeMAPeriodInput = document.getElementById("volumeMAPeriod");
+if (volumeMAPeriodInput) {
+  volumeMAPeriodInput.addEventListener("change", () => {
+    volumeMAPeriodInput.value = getVolumeMAPeriod();
+    updateMAChart();
+    updateVolumeChart();
+  });
+}
+
+const showMAVInput = document.getElementById("showMAV");
+if (showMAVInput) {
+  const syncMAVToggle = () => {
+    showMAVInput.closest(".toggle")?.classList.toggle("active", showMAVInput.checked);
+    updateMAChart();
+    updateVolumeChart();
+  };
+  showMAVInput.addEventListener("change", syncMAVToggle);
+  syncMAVToggle();
+}
+
 ["kdOversold", "kdOverbought"].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener("change", () => updateKDChart());
@@ -2011,10 +2127,11 @@ function getYearRangeIndexes(dateArr, year) {
   return { from, to };
 }
 
-function buildComboLabel(requiredMA, needKD) {
+function buildComboLabel(requiredMA, needKD, needMAV, mavPeriod) {
   const parts = [];
   if (requiredMA?.length) parts.push(`MA(${requiredMA.join("+")})`);
   if (needKD) parts.push("KD");
+  if (needMAV) parts.push(`MAV(${mavPeriod})`);
   return parts.length ? parts.join(" + ") : "No conditions";
 }
 
@@ -2022,8 +2139,10 @@ function comboRank65536(simInfo) {
   const payload = {
     requiredMA: Array.isArray(simInfo?.requiredMA) ? [...simInfo.requiredMA].sort() : [],
     needKD: !!simInfo?.needKD,
+    needMAV: !!simInfo?.needMAV,
     fastPeriod: Number.isFinite(simInfo?.fastPeriod) ? simInfo.fastPeriod : null,
     slowPeriod: Number.isFinite(simInfo?.slowPeriod) ? simInfo.slowPeriod : null,
+    mavPeriod: Number.isFinite(simInfo?.mavPeriod) ? simInfo.mavPeriod : null,
     fillMode: simInfo?.fillMode || "",
     feeRate: Number.isFinite(simInfo?.feeRate) ? simInfo.feeRate : null,
     taxRate: Number.isFinite(simInfo?.taxRate) ? simInfo.taxRate : null
@@ -2053,8 +2172,10 @@ function simulateStrategyOnCurrentSeries(params) {
     taxMax,
     requiredMA,
     needKD,
+    needMAV,
     fastPeriod,
-    slowPeriod
+    slowPeriod,
+    mavPeriod
   } = params;
 
   if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to < 0 || from > to) {
@@ -2072,6 +2193,7 @@ function simulateStrategyOnCurrentSeries(params) {
     kdBuySet  = idxSetFromCrossList(kdGolden);
     kdSellSet = idxSetFromCrossList(kdDeath);
   }
+  const volumeMAForSignal = needMAV ? calcVolumeMAArray(volumeSeries, mavPeriod) : null;
 
   if (!shortMA && !needKD) {
     return { ok: false, reason: "no-conditions" };
@@ -2138,6 +2260,14 @@ function simulateStrategyOnCurrentSeries(params) {
     }
 
     // 死亡交叉：賣出
+    if (needMAV) {
+      const volumeAllowed = Number.isFinite(volumeSeries[i]) &&
+                            Number.isFinite(volumeMAForSignal?.[i]) &&
+                            volumeSeries[i] > volumeMAForSignal[i];
+      if (goldenCross && !volumeAllowed) goldenCross = false;
+      if (deathCross && !volumeAllowed) deathCross = false;
+    }
+
     if (shares > 0 && deathCross) {
       const sellAmount = shares * currentPrice;
       const fee = calcFee(sellAmount, feeRate, feeMin, feeMax);
@@ -2253,6 +2383,7 @@ function runSimulator() {
   const needSMA = !!document.getElementById("simNeedSMA")?.checked;
   const needWMA = !!document.getElementById("simNeedWMA")?.checked;
   const needEMA = !!document.getElementById("simNeedEMA")?.checked;
+  const needMAV = !!document.getElementById("simNeedMAV")?.checked;
 
   const requiredMA = [];
   if (needSMA) requiredMA.push("MA");
@@ -2261,6 +2392,7 @@ function runSimulator() {
 
   let X = parseInt(document.getElementById("maFast")?.value, 10);
   let Y = parseInt(document.getElementById("maSlow")?.value, 10);
+  const mavPeriod = getVolumeMAPeriod();
   //暫時無視規則
   //if (!Number.isFinite(X) || X < 2) X = 5;
   //if (!Number.isFinite(Y) || Y <= X) Y = X + 1;
@@ -2278,8 +2410,10 @@ function runSimulator() {
     taxMax,
     requiredMA,
     needKD,
+    needMAV,
     fastPeriod: X,
-    slowPeriod: Y
+    slowPeriod: Y,
+    mavPeriod
   });
 
   if (!simResult.ok) {
@@ -2308,7 +2442,8 @@ function runSimulator() {
       `Fill: ${fillMode} | Fund: ${fund.toFixed(2)} | FeeRate: ${feeRate} | TaxRate: ${taxRate} | Fees: ${totalFee.toFixed(2)} | Taxes: ${totalTax.toFixed(2)} | ` +
       `Conditions: ${[
         requiredMA.length ? `MA(${requiredMA.join("+")}) fast=${X} slow=${Y}` : null,
-        needKD ? "KD" : null
+        needKD ? "KD" : null,
+        needMAV ? `MAV(${mavPeriod})` : null
       ].filter(Boolean).join(" + ")}`;
   }
 
@@ -2375,8 +2510,10 @@ function runSimulator() {
     taxMax,
     requiredMA,
     needKD,
+    needMAV,
     fastPeriod: X,
     slowPeriod: Y,
+    mavPeriod,
     roi
   };
 }
@@ -2397,7 +2534,7 @@ async function logComboYearRanking(simInfo) {
     return;
   }
 
-  const comboLabel = buildComboLabel(simInfo.requiredMA, simInfo.needKD);
+  const comboLabel = buildComboLabel(simInfo.requiredMA, simInfo.needKD, simInfo.needMAV, simInfo.mavPeriod);
 
   const saved = {
     selectedStock,
@@ -2445,8 +2582,10 @@ async function logComboYearRanking(simInfo) {
       taxMax: simInfo.taxMax,
       requiredMA: simInfo.requiredMA,
       needKD: simInfo.needKD,
+      needMAV: simInfo.needMAV,
       fastPeriod: simInfo.fastPeriod,
-      slowPeriod: simInfo.slowPeriod
+      slowPeriod: simInfo.slowPeriod,
+      mavPeriod: simInfo.mavPeriod
     });
 
     if (res.ok) results.push({ stock: name, roi: res.roi, nav: res.nav });

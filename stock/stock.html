@@ -74,6 +74,13 @@
         <label class="toggle active"><input type="checkbox" value="WMA" checked /> WMA</label>
         <label class="toggle active"><input type="checkbox" value="EMA" checked /> EMA</label>
       </div>
+
+      <label>MAV Period</label>
+      <input type="number" id="volumeMAPeriod" value="20" min="1" />
+
+      <div class="toggle-group" id="mavDisplayGroup">
+        <label class="toggle active"><input type="checkbox" id="showMAV" checked /> Show MAV</label>
+      </div>
     </div>
 
     <!-- ========================= RSI Settings ========================= -->
@@ -319,10 +326,14 @@
             <input type="checkbox" id="simNeedEMA" checked>
             <span>📈 EMA</span>
           </label>
+          <label class="chip">
+            <input type="checkbox" id="simNeedMAV">
+            <span>📊 MAV</span>
+          </label>
         </div>
 
         <div class="sim-note">
-          💡 <strong>說明：</strong>勾選的所有指標都需同時出現黃金交叉才買入，同時出現死亡交叉才賣出
+          💡 <strong>說明：</strong>勾選的所有指標都需同時出現黃金交叉才買入，同時出現死亡交叉才賣出；MAV 會用前 N 天平均成交量（不含當天）過濾交易訊號。
         </div>
       </div>
 
