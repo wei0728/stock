@@ -137,6 +137,7 @@ function populateStockSelect() {
 
     // reset caches when stock changes
     resetMACache();
+    resetVolumeMACache();
   });
 }
 
@@ -260,6 +261,54 @@ function numFrom(id, fallback) {
   return Number.isFinite(v) ? v : fallback;
 }
 
+function sanitizePositiveInt(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
+function isHeatmapMAVEnabled() {
+  return (document.getElementById('hmNeedMAV')?.value || '0') === '1';
+}
+
+function getHeatmapMAVPeriod() {
+  const input = document.getElementById('hmMAVPeriod');
+  const raw = parseInt(input?.value, 10);
+  const period = raw === -1 ? -1 : sanitizePositiveInt(raw, 20);
+  if (input) input.value = String(period);
+  return period;
+}
+
+function getEffectiveMAVPeriod(shortPeriod, longPeriod, mavPeriod) {
+  if (mavPeriod === -1) return Math.max(Math.floor((shortPeriod + longPeriod) / 4), 1);
+  return sanitizePositiveInt(mavPeriod, 20);
+}
+
+function getMAVLabel(shortPeriod, longPeriod, mavPeriod) {
+  const effective = getEffectiveMAVPeriod(shortPeriod, longPeriod, mavPeriod);
+  return mavPeriod === -1 ? `MAV(auto=${effective})` : `MAV(${effective})`;
+}
+
+function calcVolumeMAArray(volumes, averagedaycount) {
+  const arr = Array(Array.isArray(volumes) ? volumes.length : 0).fill(NaN);
+  if (!Array.isArray(volumes) || averagedaycount <= 0) return arr;
+
+  for (let dayIndex = averagedaycount; dayIndex < volumes.length; dayIndex++) {
+    let sum = 0;
+    let ok = true;
+    for (let i = dayIndex - averagedaycount; i <= dayIndex - 1; i++) {
+      const v = volumes[i];
+      if (!Number.isFinite(v)) {
+        ok = false;
+        break;
+      }
+      sum += v;
+    }
+    arr[dayIndex] = ok ? (sum / averagedaycount) : NaN;
+  }
+
+  return arr;
+}
+
 // Default values (same as script.js)
 const DEFAULT_SIM_FEE_RATE = 0.001425;  // brokerage fee rate (buy & sell)
 const DEFAULT_SIM_FEE_MIN  = 0.0;       // minimum fee per trade
@@ -352,10 +401,27 @@ function maxBuySharesWithFee(cash, price, feeRate, feeMin, feeMax) {
 
 let maCache = { MA: null, WMA: null, EMA: null };
 let maCacheN = 0;
+let volumeMACache = new Map();
+let volumeMACacheN = 0;
 
 function resetMACache() {
   maCache = { MA: null, WMA: null, EMA: null };
   maCacheN = 0;
+}
+
+function resetVolumeMACache() {
+  volumeMACache = new Map();
+  volumeMACacheN = 0;
+}
+
+function getVolumeMAForPeriod(period) {
+  const N = volumeSeries.length;
+  if (volumeMACacheN !== N) resetVolumeMACache();
+  if (!volumeMACache.has(period)) {
+    volumeMACache.set(period, calcVolumeMAArray(volumeSeries, period));
+    volumeMACacheN = N;
+  }
+  return volumeMACache.get(period);
 }
 
 function ensureMACache(type) {
@@ -507,6 +573,9 @@ function simulatePair(fast, slow, opts) {
   const taxRate = opts.fee.taxRate;
   const taxMin  = opts.fee.taxMin;
   const taxMax  = opts.fee.taxMax;
+  const needMAV = !!opts.needMAV;
+  const effectiveMAVPeriod = needMAV ? getEffectiveMAVPeriod(fast, slow, opts.mavPeriod) : 0;
+  const volumeMA = needMAV ? (opts.volumeMAMap?.get(effectiveMAVPeriod) || getVolumeMAForPeriod(effectiveMAVPeriod)) : null;
 
   for (let i = from + 1; i <= to; i++) {
     const f0 = fastArr[i - 1], s0 = slowArr[i - 1];
@@ -516,8 +585,16 @@ function simulatePair(fast, slow, opts) {
     const d0 = f0 - s0;
     const d1 = f1 - s1;
 
-    const golden = (d0 < 0 && d1 > 0);
-    const death  = (d0 > 0 && d1 < 0);
+    let golden = (d0 < 0 && d1 > 0);
+    let death  = (d0 > 0 && d1 < 0);
+
+    if (needMAV) {
+      const volumeAllowed = Number.isFinite(volumeSeries[i]) &&
+                            Number.isFinite(volumeMA?.[i]) &&
+                            volumeSeries[i] > volumeMA[i];
+      if (golden && !volumeAllowed) golden = false;
+      if (death && !volumeAllowed) death = false;
+    }
 
     if (shares > 0 && death) {
       const fi = fillNext ? ((i + 1 <= to) ? (i + 1) : -1) : i;
@@ -717,6 +794,13 @@ async function generateHeatmap() {
   const maType = document.getElementById('hmMAType')?.value || 'MA';
   const metric = document.getElementById('hmMetric')?.value || 'roi';
   const onlyUpper = (document.getElementById('hmOnlyUpper')?.value || '1') === '1';
+  const needMAV = isHeatmapMAVEnabled();
+  const mavPeriod = getHeatmapMAVPeriod();
+  const volumeMAMap = new Map();
+  if (needMAV && mavPeriod !== -1) {
+    const effectivePeriod = getEffectiveMAVPeriod(1, 1, mavPeriod);
+    volumeMAMap.set(effectivePeriod, getVolumeMAForPeriod(effectivePeriod));
+  }
 
   const startIdx = toIndexOrDefault(document.getElementById('simStartDate')?.value, 0);
   const endIdx = toIndexOrDefault(document.getElementById('simEndDate')?.value, dates.length - 1);
@@ -759,6 +843,9 @@ async function generateHeatmap() {
         maType,
         metric,
         onlyUpper,
+        needMAV,
+        mavPeriod,
+        volumeMAMap,
         fee
       });
       const idx = (f - 1) * 256 + (s - 1);
@@ -824,6 +911,9 @@ function simulatePairWithTrades(fast, slow, opts) {
   const taxRate = opts.fee.taxRate;
   const taxMin  = opts.fee.taxMin;
   const taxMax  = opts.fee.taxMax;
+  const needMAV = !!opts.needMAV;
+  const effectiveMAVPeriod = needMAV ? getEffectiveMAVPeriod(fast, slow, opts.mavPeriod) : 0;
+  const volumeMA = needMAV ? (opts.volumeMAMap?.get(effectiveMAVPeriod) || getVolumeMAForPeriod(effectiveMAVPeriod)) : null;
 
   let cash = opts.fund;
   let shares = 0;
@@ -840,8 +930,16 @@ function simulatePairWithTrades(fast, slow, opts) {
     const d0 = f0 - s0;
     const d1 = f1 - s1;
 
-    const golden = (d0 < 0 && d1 > 0);
-    const death  = (d0 > 0 && d1 < 0);
+    let golden = (d0 < 0 && d1 > 0);
+    let death  = (d0 > 0 && d1 < 0);
+
+    if (needMAV) {
+      const volumeAllowed = Number.isFinite(volumeSeries[i]) &&
+                            Number.isFinite(volumeMA?.[i]) &&
+                            volumeSeries[i] > volumeMA[i];
+      if (golden && !volumeAllowed) golden = false;
+      if (death && !volumeAllowed) death = false;
+    }
 
     // SELL
     if (shares > 0 && death) {
@@ -1110,6 +1208,13 @@ function updatePreviewFor(fx, sy) {
   const fillMode = document.getElementById('simFill')?.value || 'signalClose';
   const maType = document.getElementById('hmMAType')?.value || 'MA';
   const onlyUpper = (document.getElementById('hmOnlyUpper')?.value || '1') === '1';
+  const needMAV = isHeatmapMAVEnabled();
+  const mavPeriod = getHeatmapMAVPeriod();
+  const volumeMAMap = new Map();
+  if (needMAV && mavPeriod !== -1) {
+    const effectivePeriod = getEffectiveMAVPeriod(1, 1, mavPeriod);
+    volumeMAMap.set(effectivePeriod, getVolumeMAForPeriod(effectivePeriod));
+  }
 
   const startIdx = toIndexOrDefault(document.getElementById('simStartDate')?.value, 0);
   const endIdx = toIndexOrDefault(document.getElementById('simEndDate')?.value, dates.length - 1);
@@ -1118,7 +1223,7 @@ function updatePreviewFor(fx, sy) {
 
   const fee = getSimFeeTaxParams();
 
-  const key = `${selectedStock}|${maType}|${fillMode}|${fund}|${from}|${to}|${onlyUpper}|${fx}|${sy}`;
+  const key = `${selectedStock}|${maType}|${fillMode}|${fund}|${from}|${to}|${onlyUpper}|${needMAV}|${mavPeriod}|${fx}|${sy}`;
   if (key === lastHoverKey) return;
   lastHoverKey = key;
 
@@ -1126,14 +1231,14 @@ function updatePreviewFor(fx, sy) {
   hoverTimer = setTimeout(() => {
     let res = previewCache.get(key);
     if (!res) {
-      res = simulatePairWithTrades(fx, sy, { fund, from, to, fillMode, maType, onlyUpper, fee });
+      res = simulatePairWithTrades(fx, sy, { fund, from, to, fillMode, maType, onlyUpper, needMAV, mavPeriod, volumeMAMap, fee });
       previewCache.set(key, res);
     }
 
     if (previewInfo) {
       if (!res) previewInfo.textContent = `fast=${fx}, slow=${sy}（無資料）`;
       else if (res.invalid) previewInfo.textContent = `fast=${fx}, slow=${sy}（${res.reason}）`;
-      else previewInfo.textContent = `${maType} fast=${fx}, slow=${sy} ｜ ROI=${res.roi.toFixed(2)}% ｜ Trades=${res.trades}`;
+      else previewInfo.textContent = `${maType} fast=${fx}, slow=${sy} ｜ ROI=${res.roi.toFixed(2)}% ｜ Trades=${res.trades}${needMAV ? ` ｜ ${getMAVLabel(fx, sy, mavPeriod)}` : ''}`;
     }
 
     drawPreview(res);
